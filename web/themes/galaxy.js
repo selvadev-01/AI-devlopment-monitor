@@ -1,8 +1,9 @@
 // Galaxy theme: modules are star systems, files are planets, Claude is a ship.
 import * as THREE from 'three';
 import {
-  Animator, KIND_COLORS, AGENT_COLORS, ease, glowSprite, ringTexture, nebulaTexture, starfield, makeLabel, hash, rng, disposeTree,
+  Animator, KIND_COLORS, AGENT_COLORS, ease, glowSprite, ringTexture, loadTex, skySphere, dotTexture, nebulaTexture, starfield, makeLabel, hash, rng, disposeTree,
 } from '../fx.js';
+import { ScoutManager } from '../scouts.js';
 import { makeTrail } from './neural.js';
 
 const TEST_MODULES = ['tests', 'test', '__tests__', 'spec', 'specs', 'e2e'];
@@ -15,40 +16,64 @@ const COL = {
 };
 
 const PLANET_VERT = /* glsl */`
-  varying vec3 vN; varying vec3 vW; varying vec3 vO;
+  varying vec3 vN; varying vec3 vW; varying vec3 vO; varying vec2 vUv;
   void main() {
     vO = position;
+    vUv = uv;
     vec4 w = modelMatrix * vec4(position, 1.0);
     vW = w.xyz;
     vN = normalize(mat3(modelMatrix) * normal);
     gl_Position = projectionMatrix * viewMatrix * w;
   }`;
 
+// Surface texture (6 planet types, generated with ComfyUI) + soft terminator + drifting clouds,
+// with the module colour as a light tint and as the atmosphere rim.
 const PLANET_FRAG = /* glsl */`
-  uniform vec3 uA; uniform vec3 uB; uniform vec3 uHi; uniform vec3 uStar;
-  uniform float uSeed; uniform float uHiAmt; uniform float uBands;
-  varying vec3 vN; varying vec3 vW; varying vec3 vO;
-  float h(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
-  float noise(vec3 p) {
-    vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(mix(h(i), h(i + vec3(1,0,0)), f.x), mix(h(i + vec3(0,1,0)), h(i + vec3(1,1,0)), f.x), f.y),
-               mix(mix(h(i + vec3(0,0,1)), h(i + vec3(1,0,1)), f.x), mix(h(i + vec3(0,1,1)), h(i + vec3(1,1,1)), f.x), f.y), f.z);
-  }
-  float fbm(vec3 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * noise(p); p *= 2.03; a *= 0.5; } return s; }
+  uniform vec3 uA; uniform vec3 uHi; uniform vec3 uStar;
+  uniform float uHiAmt; uniform float uTime; uniform float uClouds; uniform float uTint; uniform float uSpin;
+  uniform sampler2D uMap; uniform sampler2D uCloudMap;
+  varying vec3 vN; varying vec3 vW; varying vec3 vO; varying vec2 vUv;
   void main() {
-    vec3 p = normalize(vO);
-    float n = fbm(p * 2.6 + uSeed * 7.0);
-    float bands = sin((p.y + n * 0.45) * uBands + uSeed * 10.0) * 0.5 + 0.5;
-    vec3 base = mix(uA * 0.28, uA, bands);
-    base = mix(base, uB, smoothstep(0.45, 0.8, n) * 0.6);
+    vec3 base = texture2D(uMap, vUv).rgb;
+    base = mix(base, base * uA * 1.8, uTint);
     vec3 N = normalize(vN);
     vec3 L = normalize(uStar - vW);
     vec3 V = normalize(cameraPosition - vW);
-    float diff = max(dot(N, L), 0.0);
+    float day = smoothstep(-0.12, 0.55, dot(N, L));
+    vec3 col = base * (0.025 + day * 1.05);
+    float cl = smoothstep(0.5, 0.9, texture2D(uCloudMap, vUv * vec2(1.0, 1.0) + vec2(uTime * uSpin, 0.0)).r) * uClouds;
+    col = mix(col, vec3(0.93, 0.95, 1.0) * (0.03 + day * 0.95), cl * 0.8);
     float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    vec3 col = base * (0.04 + diff * 1.15) + uA * rim * (0.25 + diff * 0.6) + uHi * uHiAmt * (0.55 + rim * 1.2);
+    col += uA * rim * (0.12 + day * 0.75);
+    col += uHi * uHiAmt * (0.12 + rim * 1.8); // state colour mostly at the edge, so the surface stays visible
     gl_FragColor = vec4(col, 1.0);
   }`;
+
+const RING_VERT = /* glsl */`
+  varying vec2 vP;
+  void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+
+const RING_FRAG = /* glsl */`
+  uniform vec3 uA; uniform float uSeed;
+  varying vec2 vP;
+  void main() {
+    float r = (length(vP) - 1.45) / 0.95;
+    if (r < 0.0 || r > 1.0) discard;
+    float bands = 0.5 + 0.5 * sin(r * 70.0 + uSeed) * sin(r * 23.0 + uSeed * 2.0);
+    float gap = smoothstep(0.0, 0.035, abs(r - 0.6));
+    float a = (0.25 + bands * 0.75) * gap * smoothstep(0.0, 0.06, r) * smoothstep(1.0, 0.8, r) * 0.6;
+    vec3 c = mix(vec3(0.86, 0.8, 0.7), uA, 0.3) * (0.45 + bands * 0.55);
+    gl_FragColor = vec4(c, a);
+  }`;
+
+const PLANET_TYPES = [
+  { map: 'planet_gas', clouds: 0, tint: 0.18, ringChance: 0.7 },
+  { map: 'planet_rock', clouds: 0, tint: 0.22, ringChance: 0.05 },
+  { map: 'planet_ice', clouds: 0.35, tint: 0.2, ringChance: 0.2 },
+  { map: 'planet_lava', clouds: 0, tint: 0.1, ringChance: 0 },
+  { map: 'planet_ocean', clouds: 0.9, tint: 0.12, ringChance: 0.05 },
+  { map: 'planet_desert', clouds: 0.25, tint: 0.15, ringChance: 0.1 },
+];
 
 export class GalaxyTheme {
   constructor(engine) {
@@ -58,9 +83,9 @@ export class GalaxyTheme {
     this.records = new Map();
     this.systems = new Map();
     this.labels = [];
-    this.scouts = [];
     this.focusDistance = 38;
-    this.bloom = { strength: 0.95, radius: 0.5, threshold: 0.1 };
+    this.bloom = { strength: 0.9, radius: 0.5, threshold: 0.32 }; // high threshold: textured planets stay crisp
+    this.timeU = { value: 0 };                                     // shared by every planet's cloud drift
     this.fog = null;
     this.home = { position: new THREE.Vector3(0, 160, 320) };
     this.planetGeo = new THREE.SphereGeometry(1, 40, 28);
@@ -83,7 +108,9 @@ export class GalaxyTheme {
     sun.position.set(0.3, 1, 0.2);
     this.root.add(sun);
 
-    this.stars = starfield(3500, this.galaxyR * 8, 0.6);
+    this.root.add(skySphere('sky_space', Math.min(5200, this.galaxyR * 9), 0x9aa3b8));
+    this.stars = starfield(2500, this.galaxyR * 6, 0.6);
+    this.stars.material.opacity = 0.6;
     this.root.add(this.stars);
     this.buildNebulae();
     this.buildCore();
@@ -91,6 +118,19 @@ export class GalaxyTheme {
     for (const sys of this.systems.values()) this.buildSystem(sys);
     for (const node of model.nodes.values()) this.addPlanet(node);
     this.buildShip();
+    this.scouts = new ScoutManager(this, {
+      make: (color) => {
+        const ship = this.makeShip(color, 0.6);
+        const trail = makeTrail(70, color);
+        return {
+          obj: ship, trail, prev: new THREE.Vector3(),
+          dispose: () => { disposeTree(ship); trail.line.geometry.dispose(); trail.line.material.dispose(); },
+        };
+      },
+      move: (s, goal, dt) => this.steer(s.obj, goal, s.prev, dt, 2.2),
+      lift: 5,
+    });
+    this.scouts.sync(model);
   }
 
   layoutSystems() {
@@ -138,7 +178,7 @@ export class GalaxyTheme {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    this.arms = new THREE.Points(g, new THREE.PointsMaterial({ size: 1.1, vertexColors: true, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.arms = new THREE.Points(g, new THREE.PointsMaterial({ size: 1.3, map: dotTexture(), vertexColors: true, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false }));
     this.root.add(this.arms);
     this.root.add(glowSprite(C('#ffe2b8'), 70, 0.9));
     this.root.add(glowSprite(C('#fff4e0'), 18, 1));
@@ -163,23 +203,39 @@ export class GalaxyTheme {
     const k = sys.count++;
     const orbit = (7 + Math.sqrt(k) * 5.2 + (hash(node.id) - 0.5) * 1.5) * SCALE;
     const size = (0.6 + Math.log2(node.loc + 1) * 0.3) * SCALE;
+    const type = PLANET_TYPES[Math.floor(hash(node.id + 'type') * PLANET_TYPES.length)];
     const mat = new THREE.ShaderMaterial({
       vertexShader: PLANET_VERT,
       fragmentShader: PLANET_FRAG,
       uniforms: {
         uA: { value: sys.color.clone() },
-        uB: { value: sys.color.clone().offsetHSL((hash(node.id + 'h') - 0.5) * 0.3, -0.2, 0.15) },
         uHi: { value: new THREE.Color() },
         uHiAmt: { value: 0 },
         uStar: { value: sys.pos.clone() },
-        uSeed: { value: hash(node.id) * 10 },
-        uBands: { value: 6 + hash(node.id + 'b') * 18 },
+        uMap: { value: loadTex(type.map) },
+        uCloudMap: { value: loadTex('clouds', { color: false }) },
+        uClouds: { value: type.clouds },
+        uTint: { value: type.tint },
+        uSpin: { value: 0.003 + hash(node.id + 's') * 0.004 },
+        uTime: this.timeU,
       },
     });
     const mesh = new THREE.Mesh(this.planetGeo, mat);
     mesh.scale.setScalar(size);
+    mesh.rotation.y = hash(node.id + 'r') * Math.PI * 2;
     mesh.userData.id = node.id;
     sys.group.add(mesh);
+
+    if (hash(node.id + 'ring') < type.ringChance) {
+      const ringMat = new THREE.ShaderMaterial({
+        vertexShader: RING_VERT, fragmentShader: RING_FRAG,
+        uniforms: { uA: { value: sys.color.clone() }, uSeed: { value: hash(node.id) * 20 } },
+        transparent: true, side: THREE.DoubleSide, depthWrite: false,
+      });
+      const ringMesh = new THREE.Mesh(new THREE.RingGeometry(1.45, 2.4, 128, 1), ringMat);
+      ringMesh.rotation.x = -Math.PI / 2 + (hash(node.id + 'tilt') - 0.5) * 0.7;
+      mesh.add(ringMesh); // child: follows the planet's position and scale
+    }
 
     const pts = [];
     for (let i = 0; i <= 128; i++) { const a = (i / 128) * Math.PI * 2; pts.push(new THREE.Vector3(Math.cos(a) * orbit, 0, Math.sin(a) * orbit)); }
@@ -244,6 +300,7 @@ export class GalaxyTheme {
         this.records.delete(id);
       }
     }
+    this.scouts.sync(model);
   }
 
   // ------------------------------------------------------------------ queries
@@ -289,7 +346,7 @@ export class GalaxyTheme {
     }, () => { obj.removeFromParent(); if (flat) obj.geometry.dispose(); obj.material.dispose(); });
   }
 
-  scanBeam(rec, color, seconds = 2.4) {
+  scanBeam(rec, color, seconds = 2.4, from = this.ship) {
     const geo = new THREE.ConeGeometry(1, 1, 32, 1, true);
     geo.translate(0, -0.5, 0);
     geo.rotateX(-Math.PI / 2);
@@ -299,9 +356,9 @@ export class GalaxyTheme {
     this.root.add(cone, torus);
     this.anim.add(seconds, (k) => {
       const fade = Math.min(1, k * 5) * Math.min(1, (1 - k) * 4);
-      cone.position.copy(this.ship.position);
+      cone.position.copy(from.position);
       cone.lookAt(rec.world);
-      cone.scale.set(rec.size * 1.1, rec.size * 1.1, this.ship.position.distanceTo(rec.world));
+      cone.scale.set(rec.size * 1.1, rec.size * 1.1, from.position.distanceTo(rec.world));
       mat.opacity = 0.22 * fade;
       torus.position.copy(rec.world);
       torus.scale.setScalar(rec.size * 1.5);
@@ -398,23 +455,27 @@ export class GalaxyTheme {
   }
 
   onEvent(ev, meta) {
+    // Subagent events are acted out by that subagent's scout ship; the main ship stays put.
+    const scout = this.scouts.handle(ev, meta);
+    if (ev.kind === 'agent_start' || ev.kind === 'agent_stop') return;
+    const actor = scout ? scout.obj : this.ship;
     let rec = ev.file ? this.records.get(ev.file) : null;
     switch (ev.kind) {
       case 'prompt':
-        this.ring(() => this.ship.position, COL.white, 2, 30, 1.4);
+        this.ring(() => actor.position, COL.white, 2, 30, 1.4);
         break;
       case 'read':
         if (!rec) break;
-        this.flyTo(ev.file);
+        if (!scout) this.flyTo(ev.file);
         this.boost(rec, COL.read, 0.8, 2.6);
-        this.anim.add(0.7, () => {}, () => this.scanBeam(rec, COL.read));
+        this.anim.add(0.7, () => {}, () => this.scanBeam(rec, COL.read, 2.4, actor));
         break;
       case 'search':
-        this.ring(() => this.ship.position, COL.search, 3, 90, 2, true);
+        this.ring(() => actor.position, COL.search, 3, scout ? 45 : 90, 2, true);
         break;
       case 'edit':
         if (!rec) break;
-        this.flyTo(ev.file);
+        if (!scout) this.flyTo(ev.file);
         this.boost(rec, COL.edit, 1, 3.2);
         this.constructionRing(rec);
         (meta.dependents || []).forEach((dep, i) => {
@@ -430,7 +491,7 @@ export class GalaxyTheme {
         }
         if (!rec) break;
         const r = rec;
-        this.flyTo(ev.file);
+        if (!scout) this.flyTo(ev.file);
         r.scale = 0;
         this.accretion(r, COL.create);
         this.anim.add(2.4, (k) => { r.scale = ease.outBack(Math.max(0, (k - 0.25) / 0.75)); });
@@ -439,10 +500,10 @@ export class GalaxyTheme {
         break;
       }
       case 'bash':
-        this.flash(COL.bash);
+        this.flash(COL.bash, actor);
         break;
       case 'bash_result':
-        if (!ev.ok) this.flash(COL.fail);
+        if (!ev.ok) this.flash(COL.fail, actor);
         break;
       case 'test_result':
         this.pulsar(this.testAnchor(), ev.ok ? COL.ok : COL.fail);
@@ -452,45 +513,18 @@ export class GalaxyTheme {
           if (fr) this.anim.add(0.8, () => {}, () => this.boost(fr, COL.fail, 1, 4));
         }
         break;
-      case 'agent_start':
-        this.spawnScout();
-        break;
-      case 'agent_stop':
-        this.removeScout();
-        break;
       case 'idle':
-        this.shipTarget = null;
-        while (this.scouts.length) this.removeScout();
+        this.shipTarget = null; // background subagents may keep working, so scouts stay
         break;
       default:
         break;
     }
   }
 
-  flash(color) {
-    const f = this.ship.userData.flame;
-    this.anim.add(1.4, (k) => { f.material.color.copy(color).lerp(COL.engine, k); f.scale.setScalar(2.4 + 3 * (1 - k)); });
-  }
-
-  spawnScout() {
-    const color = C(AGENT_COLORS[this.scouts.length % AGENT_COLORS.length]);
-    const ship = this.makeShip(color, 0.6);
-    ship.position.copy(this.ship.position);
-    this.root.add(ship);
-    const trail = makeTrail(70, color);
-    this.root.add(trail.line);
-    const systems = [...this.systems.values()];
-    const sys = systems[Math.floor(Math.random() * systems.length)];
-    this.scouts.push({ ship, trail, color, sys, target: null, retarget: 0, goal: new THREE.Vector3(), prev: ship.position.clone() });
-  }
-
-  removeScout() {
-    const s = this.scouts.shift();
-    if (!s) return;
-    this.anim.add(0.9, (k) => { s.ship.scale.setScalar(0.6 * (1 - k) + 0.001); s.trail.line.material.opacity = 1 - k; }, () => {
-      s.ship.removeFromParent(); disposeTree(s.ship);
-      s.trail.line.removeFromParent(); s.trail.line.geometry.dispose(); s.trail.line.material.dispose();
-    });
+  flash(color, ship = this.ship) {
+    const f = ship.userData.flame;
+    const back = ship.userData.engineColor || COL.engine;
+    this.anim.add(1.4, (k) => { f.material.color.copy(color).lerp(back, k); f.scale.setScalar(2.4 + 3 * (1 - k)); });
   }
 
   steer(obj, goal, prev, dt, rate) {
@@ -509,6 +543,7 @@ export class GalaxyTheme {
   // ------------------------------------------------------------------ frame
   update(dt, t) {
     this.anim.update(dt);
+    this.timeU.value = t;
     const model = this.model;
     const hoverId = this.engine.hoverId;
     for (const rec of this.records.values()) {
@@ -537,19 +572,7 @@ export class GalaxyTheme {
     this.ship.userData.flame.material.opacity = 0.8 + Math.sin(t * 30) * 0.2;
     this.shipTrail.push(this.ship.position);
 
-    for (const s of this.scouts) {
-      s.retarget -= dt;
-      if (s.retarget <= 0 && s.sys) {
-        const files = model.modules.get(s.sys.name)?.files || [];
-        const r = this.records.get(files[Math.floor(Math.random() * files.length)]);
-        if (r) { s.target = r; this.boost(r, s.color, 0.6, 1.5); }
-        s.retarget = 1.8 + Math.random() * 1.4;
-      }
-      if (s.target) s.goal.copy(s.target.world).add(this.tmp.set(0, s.target.size * 2 + 1.5, 0));
-      else s.goal.copy(s.sys.pos);
-      this.steer(s.ship, s.goal, s.prev, dt, 2.2);
-      s.trail.push(s.ship.position);
-    }
+    this.scouts.update(dt, t);
 
     this.arms.rotation.y += dt * 0.006;
     this.stars.rotation.y += dt * 0.0015;
@@ -557,6 +580,7 @@ export class GalaxyTheme {
 
   dispose() {
     this.anim.clear();
+    this.scouts?.dispose();
     for (const l of this.labels) l.removeFromParent();
     disposeTree(this.root);
   }

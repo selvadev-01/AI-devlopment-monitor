@@ -8,3 +8,4 @@ vscode-extension/server/
 vscode-extension/web/
 concept/
 docs/galaxy-closeup.png
+docs/*.png

@@ -17,12 +17,13 @@ export class GraphModel {
     this.modified = new Map();   // id -> {added, removed}
     this.created = new Set();
     this.failing = new Set();
+    this.agents = new Map();     // key ('start:<eventId>' until bound, then agent id) -> running subagent
   }
 
   setGraph(g, reset = true) {
     if (!g) return;
     if (reset) {
-      this.modified.clear(); this.created.clear(); this.failing.clear(); this.colorOf.clear();
+      this.modified.clear(); this.created.clear(); this.failing.clear(); this.colorOf.clear(); this.agents.clear();
     }
     this.name = g.name; this.root = g.root;
     this.nodes = new Map(g.nodes.map((n) => [n.id, n]));
@@ -81,6 +82,35 @@ export class GraphModel {
       this.failing = ev.ok ? new Set() : this.matchFiles(ev.failingFiles || []);
       meta.failing = [...this.failing];
     }
+    this.applyAgent(ev, meta);
     return meta;
+  }
+
+  applyAgent(ev, meta) {
+    if (ev.kind === 'agent_start') {
+      const key = `start:${ev.id}`;
+      this.agents.set(key, {
+        key, id: null, type: ev.agentType || 'agent', label: ev.agentLabel || ev.detail, color: ev.agentColor ?? this.agents.size,
+        tools: 0, last: 'Starting…', file: null, since: ev.ts,
+      });
+      return;
+    }
+    if (!ev.agent) {
+      // Logs from before agent ids were recorded: a stop just ends the oldest subagent.
+      if (ev.kind === 'agent_stop') { const first = this.agents.keys().next().value; if (first) this.agents.delete(first); }
+      return;
+    }
+    let a = this.agents.get(ev.agent);
+    if (!a && ev.agentStartId != null && this.agents.has(`start:${ev.agentStartId}`)) {
+      meta.rekeyedFrom = `start:${ev.agentStartId}`;
+      a = this.agents.get(meta.rekeyedFrom);
+      this.agents.delete(meta.rekeyedFrom);
+    }
+    if (!a) a = { type: ev.agentType, label: ev.agentLabel, color: ev.agentColor ?? 0, tools: 0, since: ev.ts };
+    Object.assign(a, { key: ev.agent, id: ev.agent, type: ev.agentType || a.type, tools: ev.agentTools ?? a.tools + 1 });
+    if (ev.kind === 'agent_stop') { this.agents.delete(ev.agent); return; }
+    a.last = ev.file ? `${ev.detail}` : ev.detail;
+    if (ev.file) a.file = ev.file;
+    this.agents.set(ev.agent, a);
   }
 }

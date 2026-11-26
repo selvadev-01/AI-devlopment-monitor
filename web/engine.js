@@ -163,6 +163,8 @@ export class Engine {
   handleEvent(ev, meta) {
     if (!this.theme) return;
     this.theme.onEvent(ev, meta);
+    // Subagents can run in parallel: their scouts carry live tags instead of moving the camera.
+    if (ev.agent) return;
     const t = this.theme;
     const hasFile = Boolean(ev.file && t.positionOf(ev.file));
     const fileAnchor = () => t.positionOf(ev.file);

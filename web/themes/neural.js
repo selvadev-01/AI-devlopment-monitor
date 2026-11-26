@@ -1,8 +1,9 @@
 // Neural theme: files are neurons, imports are axons. Edits send pulses to dependents.
 import * as THREE from 'three';
 import {
-  Animator, KIND_COLORS, AGENT_COLORS, ease, glowSprite, ringTexture, starfield, makeLabel, hash, rng, disposeTree,
+  Animator, KIND_COLORS, ease, glowSprite, dotTexture, ringTexture, starfield, makeLabel, hash, rng, disposeTree, loadTex, skySphere,
 } from '../fx.js';
+import { ScoutManager } from '../scouts.js';
 
 const TEST_MODULES = ['tests', 'test', '__tests__', 'spec', 'specs', 'e2e'];
 const HALO = 3.6; // halo sprite size relative to the neuron core
@@ -19,10 +20,9 @@ export class NeuralTheme {
     this.anim = new Animator();
     this.records = new Map();
     this.labels = [];
-    this.scouts = [];
     this.centers = new Map();
     this.focusDistance = 42;
-    this.bloom = { strength: 0.8, radius: 0.45, threshold: 0.18 };
+    this.bloom = { strength: 0.8, radius: 0.45, threshold: 0.42 }; // halos give the glow; keeps the membrane crisp
     this.fog = new THREE.FogExp2(0x05070a, 0.0026);
     this.home = { position: new THREE.Vector3(0, 40, 170) };
     this.sphereGeo = new THREE.SphereGeometry(1, 20, 14);
@@ -39,7 +39,8 @@ export class NeuralTheme {
     this.radius = 22 + Math.sqrt(n) * 5;
     this.home.position.set(0, this.radius * 0.35, this.radius * 2.6);
 
-    this.stars = starfield(1800, this.radius * 9, 0.5);
+    this.root.add(skySphere('sky_neural', Math.min(5200, this.radius * 14), 0x7d8aa0));
+    this.stars = starfield(1200, this.radius * 9, 0.5);
     this.root.add(this.stars);
     this.dust = this.makeDust(700, this.radius * 1.5);
     this.root.add(this.dust);
@@ -52,6 +53,16 @@ export class NeuralTheme {
     this.buildDendrites();
     this.buildLabels();
     this.buildAgent();
+    this.scouts = new ScoutManager(this, {
+      make: (color) => {
+        const spr = glowSprite(color, 4, 0.95);
+        const trail = makeTrail(36, color);
+        return { obj: spr, trail, dispose: () => { spr.material.dispose(); trail.line.geometry.dispose(); trail.line.material.dispose(); } };
+      },
+      move: (s, goal, dt) => s.obj.position.lerp(goal, 1 - Math.exp(-dt * 3)),
+      lift: 3.2,
+    });
+    this.scouts.sync(model);
   }
 
   makeDust(count, radius) {
@@ -63,7 +74,7 @@ export class NeuralTheme {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    return new THREE.Points(g, new THREE.PointsMaterial({ size: 0.35, color: 0x6f86a8, transparent: true, opacity: 0.45, depthWrite: false, blending: THREE.AdditiveBlending }));
+    return new THREE.Points(g, new THREE.PointsMaterial({ size: 0.5, map: dotTexture(), color: 0x6f86a8, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending }));
   }
 
   addRecord(node, pos) {
@@ -71,7 +82,7 @@ export class NeuralTheme {
     const size = 0.55 + Math.log2(node.loc + 1) * 0.17;
     const group = new THREE.Group();
     group.position.copy(pos);
-    const core = new THREE.Mesh(this.sphereGeo, new THREE.MeshBasicMaterial({ color: color.clone() }));
+    const core = new THREE.Mesh(this.sphereGeo, somaMaterial(color));
     core.scale.setScalar(size);
     const halo = glowSprite(color, size * HALO, 0.3);
     halo.userData.id = node.id;
@@ -200,6 +211,7 @@ export class NeuralTheme {
     }
     this.buildEdges();
     if (changed) { this.buildDendrites(); this.buildLabels(); }
+    this.scouts.sync(model);
   }
 
   placeNear(node) {
@@ -298,25 +310,29 @@ export class NeuralTheme {
   }
 
   onEvent(ev, meta) {
+    // Subagent events are acted out by that subagent's scout; the main orb stays where it is.
+    const scout = this.scouts.handle(ev, meta);
+    if (ev.kind === 'agent_start' || ev.kind === 'agent_stop') return;
+    const actorPos = scout ? scout.obj.position : this.agent.position;
     const rec = ev.file ? this.records.get(ev.file) : null;
     switch (ev.kind) {
       case 'prompt':
-        this.ring(this.agent.position, COL.white, 2, 24, 1.4);
+        this.ring(actorPos, COL.white, 2, 24, 1.4);
         break;
       case 'read':
         if (!rec) break;
-        this.moveAgentTo(ev.file);
+        if (!scout) this.moveAgentTo(ev.file);
         this.boost(rec, COL.read, 1, 2.6);
         this.ring(rec.group.position, COL.read, rec.size * 2, rec.size * 12, 1.3, 0.3);
         this.ring(rec.group.position, COL.read, rec.size * 2, rec.size * 12, 1.3, 0.9);
         break;
       case 'search':
-        this.setAgentColor(COL.search);
-        this.ring(this.agent.position, COL.search, 3, 60, 1.8);
+        if (!scout) this.setAgentColor(COL.search);
+        this.ring(actorPos, COL.search, 3, scout ? 30 : 60, 1.8);
         break;
       case 'edit':
         if (!rec) break;
-        this.moveAgentTo(ev.file);
+        if (!scout) this.moveAgentTo(ev.file);
         this.boost(rec, COL.edit, 1, 3.2);
         this.popScale(rec, 1.6);
         (meta.dependents || []).forEach((dep, i) => {
@@ -328,7 +344,7 @@ export class NeuralTheme {
         const node = ev.file && this.model.nodes.get(ev.file);
         const r = rec || (node && this.addRecord(node, this.placeNear(node)));
         if (!r) break;
-        this.moveAgentTo(ev.file);
+        if (!scout) this.moveAgentTo(ev.file);
         r.scale = 0;
         this.anim.add(1.6, (k) => { r.scale = ease.outBack(k); });
         this.boost(r, COL.create, 1, 3.5);
@@ -337,11 +353,11 @@ export class NeuralTheme {
         break;
       }
       case 'bash':
-        this.setAgentColor(COL.bash, 2);
-        this.ring(this.agent.position, COL.bash, 2, 14, 1);
+        if (!scout) this.setAgentColor(COL.bash, 2);
+        this.ring(actorPos, COL.bash, 2, 14, 1);
         break;
       case 'bash_result':
-        if (!ev.ok) { this.setAgentColor(COL.fail, 2); this.ring(this.agent.position, COL.fail, 2, 18, 1.2); }
+        if (!ev.ok) { if (!scout) this.setAgentColor(COL.fail, 2); this.ring(actorPos, COL.fail, 2, 18, 1.2); }
         break;
       case 'test_result': {
         const origin = this.testAnchor().clone();
@@ -361,15 +377,8 @@ export class NeuralTheme {
         }
         break;
       }
-      case 'agent_start':
-        this.spawnScout();
-        break;
-      case 'agent_stop':
-        this.removeScout();
-        break;
       case 'idle':
-        this.agentTarget = null;
-        while (this.scouts.length) this.removeScout();
+        this.agentTarget = null; // background subagents may keep working, so scouts stay
         break;
       default:
         break;
@@ -387,32 +396,12 @@ export class NeuralTheme {
     this.anim.add(0.8, (k) => { rec.scale = 1 + (peak - 1) * Math.sin(k * Math.PI); }, () => { rec.scale = 1; });
   }
 
-  spawnScout() {
-    const color = C(AGENT_COLORS[this.scouts.length % AGENT_COLORS.length]);
-    const spr = glowSprite(color, 5, 0.95);
-    spr.position.copy(this.agent.position);
-    this.root.add(spr);
-    const trail = makeTrail(36, color);
-    this.root.add(trail.line);
-    const mods = [...this.model.modules.values()];
-    const mod = mods[Math.floor(Math.random() * mods.length)];
-    this.scouts.push({ spr, trail, color, mod, target: null, retarget: 0, goal: new THREE.Vector3() });
-  }
-
-  removeScout() {
-    const s = this.scouts.shift();
-    if (!s) return;
-    this.anim.add(0.8, (k) => { s.spr.material.opacity = 0.95 * (1 - k); s.trail.line.material.opacity = 1 - k; }, () => {
-      s.spr.removeFromParent(); s.spr.material.dispose();
-      s.trail.line.removeFromParent(); s.trail.line.geometry.dispose(); s.trail.line.material.dispose();
-    });
-  }
-
   // ------------------------------------------------------------------ frame
   update(dt, t) {
     this.anim.update(dt);
     const model = this.model;
     const hoverId = this.engine.hoverId;
+    const cam = this.engine.camera.position;
     for (const rec of this.records.values()) {
       rec.boost = Math.max(0, rec.boost - dt / rec.decay);
       const c = rec.core.material.color.copy(rec.base);
@@ -423,7 +412,10 @@ export class NeuralTheme {
       if (hoverId === rec.id) c.lerp(COL.white, 0.4);
       c.lerp(rec.boostColor, rec.boost);
       rec.halo.material.color.copy(c);
-      rec.halo.material.opacity = 0.26 + stateGlow * 0.8 + rec.boost * 0.4 + 0.04 * Math.sin(t * 1.3 + rec.phase);
+      // Fade the halo when the camera is close so the membrane texture of the cell body shows.
+      const dist = cam.distanceTo(rec.group.position);
+      const near = Math.min(1, Math.max(0, (dist - rec.size * 6) / (rec.size * 28)));
+      rec.halo.material.opacity = (0.26 + stateGlow * 0.8 + rec.boost * 0.4 + 0.04 * Math.sin(t * 1.3 + rec.phase)) * (0.15 + 0.85 * near);
       const s = Math.max(0.001, rec.size * rec.scale * (1 + rec.boost * 0.35));
       rec.core.scale.setScalar(s);
       rec.halo.scale.setScalar(s * HALO * (1 + rec.boost * 0.35));
@@ -436,19 +428,7 @@ export class NeuralTheme {
     this.agentCore.scale.setScalar(2.2 + Math.sin(t * 6) * 0.2);
     this.agentTrail.push(this.agent.position);
 
-    for (const s of this.scouts) {
-      s.retarget -= dt;
-      if (s.retarget <= 0 && s.mod) {
-        const r = this.records.get(s.mod.files[Math.floor(Math.random() * s.mod.files.length)]);
-        if (r) { s.target = r; this.boost(r, s.color, 0.7, 1.4); }
-        s.retarget = 1.2 + Math.random() * 1.2;
-      }
-      if (s.target) {
-        s.goal.copy(s.target.group.position).setY(s.target.group.position.y + s.target.size * 2 + 1);
-        s.spr.position.lerp(s.goal, 1 - Math.exp(-dt * 3));
-      }
-      s.trail.push(s.spr.position);
-    }
+    this.scouts.update(dt, t);
 
     this.dust.rotation.y += dt * 0.01;
     this.stars.rotation.y += dt * 0.002;
@@ -456,12 +436,46 @@ export class NeuralTheme {
 
   dispose() {
     this.anim.clear();
+    this.scouts?.dispose();
     for (const l of this.labels) l.removeFromParent();
     disposeTree(this.root);
   }
 }
 
 // --------------------------------------------------------------------- helpers
+const SOMA_VERT = /* glsl */`
+  varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vW = w.xyz;
+    vN = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }`;
+
+// Electron-microscopy membrane texture on the cell body, with a bright translucent rim.
+const SOMA_FRAG = /* glsl */`
+  uniform vec3 uColor; uniform sampler2D uMap;
+  varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+  void main() {
+    float m = pow(texture2D(uMap, vUv * vec2(2.0, 1.0)).r, 1.6);
+    vec3 V = normalize(cameraPosition - vW);
+    float f = 1.0 - max(dot(normalize(vN), V), 0.0);
+    vec3 c = uColor * (0.1 + m * 0.75) + uColor * pow(f, 2.4) * 1.1;
+    gl_FragColor = vec4(c, 1.0);
+  }`;
+
+/** Neuron body material. `material.color` aliases the uniform so existing colour code keeps working. */
+function somaMaterial(color) {
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: SOMA_VERT,
+    fragmentShader: SOMA_FRAG,
+    uniforms: { uColor: { value: color.clone() }, uMap: { value: loadTex('membrane', { color: false }) } },
+  });
+  mat.color = mat.uniforms.uColor.value;
+  return mat;
+}
+
 export function makeTrail(n, color) {
   const pos = new Float32Array(n * 3);
   const col = new Float32Array(n * 3);

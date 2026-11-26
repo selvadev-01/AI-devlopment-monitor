@@ -47,7 +47,12 @@ export function normalizeHook(p) {
   const hook = p.hook_event_name;
   const tool = p.tool_name;
   const input = p.tool_input || {};
-  const base = { session: p.session_id || 'unknown', cwd: p.cwd || null, tool: tool || null, agent: p.agent_id || null };
+  // Tool calls made inside a subagent carry agent_id + agent_type (main-agent calls do not).
+  const base = {
+    session: p.session_id || 'unknown', cwd: p.cwd || null, tool: tool || null,
+    agent: p.agent_id || null, agentType: p.agent_type || null,
+  };
+  if (tool === 'SubagentHandback') return null; // internal hand-off, SubagentStop covers it
 
   switch (hook) {
     case 'SessionStart':
@@ -57,7 +62,7 @@ export function normalizeHook(p) {
     case 'Stop':
       return { ...base, kind: 'idle', detail: 'Waiting for you' };
     case 'SubagentStop':
-      return { ...base, kind: 'agent_stop', detail: 'Subagent finished' };
+      return { ...base, kind: 'agent_stop', detail: `${p.agent_type || 'Subagent'} finished` };
     case 'Notification':
       return { ...base, kind: 'notify', detail: short(p.message, 120) };
     case 'PreToolUse':
@@ -111,7 +116,7 @@ function preTool(base, tool, input) {
         ...base,
         kind: 'agent_start',
         detail: short(input.description || input.subagent_type || 'Subagent', 80),
-        agentType: input.subagent_type || 'general',
+        launchType: input.subagent_type || 'general-purpose',
       };
     case 'WebFetch':
     case 'WebSearch':

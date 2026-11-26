@@ -5,16 +5,29 @@ test run and subagent shows up as an animation, in one of two themes:
 
 | Neural | Galaxy |
 |---|---|
-| ![Neural](docs/neural.png) | ![Galaxy](docs/galaxy.png) |
+| ![Neural](docs/neural.webp) | ![Galaxy](docs/galaxy.webp) |
 
 - **Neural**: files are neurons and imports are connections. An edit sends pulses to every file that depends on it, so you can see the impact of a change.
 - **Galaxy**: modules are star systems and files are planets. Claude is a ship that scans (Read), builds (Edit) and forms new planets (Write).
 
 Switch themes with the toggle in the top bar or press `T`. Press `F` to go back to the overview, and double-click a node to focus it.
 
+## Textures
+
+| Neural close-up | Galaxy |
+|---|---|
+| ![Neural close-up](docs/neural-closeup.webp) | ![Galaxy textured](docs/galaxy-textured.webp) |
+
+The surface textures in [web/textures/](web/textures/) (about 1 MB) were generated locally with ComfyUI (Z-Image Turbo), cropped, and made to wrap seamlessly around a sphere:
+
+- **Galaxy**: six planet surfaces (gas giant, rocky, ice, lava, ocean, desert), chosen per file and lightly tinted with the module colour. Planets also get a drifting cloud layer, a soft day/night terminator, an atmosphere rim in the module colour, procedural rings on some planets, and a Milky Way panorama behind the scene.
+- **Neural**: an electron-microscopy membrane texture on each neuron body, with a translucent rim, and a fluorescence-microscopy bokeh panorama. Halos fade as the camera gets close, so the membrane detail shows.
+
+To restyle, replace a `.jpg` in `web/textures/` with an image of the same name. Planet maps must be 2:1 equirectangular, and the left and right edges must match.
+
 ## Session replay
 
-![Replay timeline](docs/replay.png)
+![Replay timeline](docs/replay.webp)
 
 The bar under the 3D view replays any recorded session:
 
@@ -59,6 +72,19 @@ Once installed, the extension starts the monitor server inside VS Code, so you d
 - **Status bar**: shows what Claude is doing right now, for example `Edit users.ts` or `Tests: 1 failed`. Click it to open the 3D panel beside your editor.
 - **Commands**: `AI Dev Monitor: Open Monitor`, `Show This Workspace`, `Open in Browser`.
 - **Settings**: `aiDevMonitor.port` (default 7777) and `aiDevMonitor.autoStart` (default on).
+
+## Subagents
+
+![Subagents](docs/subagents.webp)
+
+Claude Code adds `agent_id` and `agent_type` to every tool call made inside a subagent. The monitor uses these to follow each subagent separately:
+
+- **Subagents panel (left)**: every running subagent with its type, task (the description it was launched with), current action and tool count. Click one to focus the file it is working on.
+- **3D scouts**: each subagent gets its own colour and flies to the files it actually reads and edits. A live tag above it shows what it is doing, for example `Explore · Read auth.ts`. The main agent and the camera stay with the main conversation, so parallel subagents don't make the view jump around.
+- **Activity feed**: subagent events carry a coloured chip with the agent type.
+- **Replay**: subagent fields are saved in the event log, so all of this works in replay too.
+
+A launch (`Agent` tool) carries no id yet. The subagent's first tool call claims the oldest pending launch of the same type. To check which fields your Claude Code version sends, create `data/debug-hooks`: payload shapes (keys and ids, no file contents) are then written to `data/hook-shapes.jsonl`.
 
 ## Several projects in parallel
 

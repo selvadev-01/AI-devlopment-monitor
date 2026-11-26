@@ -88,10 +88,16 @@ async function send(payload) {
   }
 }
 
-const pre = (tool_name, tool_input) => send({ hook_event_name: 'PreToolUse', tool_name, tool_input });
-const post = (tool_name, tool_input, tool_response) => send({ hook_event_name: 'PostToolUse', tool_name, tool_input, tool_response });
-const read = (f) => pre('Read', { file_path: abs(f) });
-const edit = (f, add, rem) => pre('Edit', { file_path: abs(f), old_string: nLines(rem), new_string: nLines(add) });
+// `agent` = { agent_id, agent_type }: Claude Code adds these to tool calls made inside a subagent.
+const pre = (tool_name, tool_input, agent = {}) => send({ hook_event_name: 'PreToolUse', tool_name, tool_input, ...agent });
+const post = (tool_name, tool_input, tool_response, agent = {}) => send({ hook_event_name: 'PostToolUse', tool_name, tool_input, tool_response, ...agent });
+const read = (f, agent) => pre('Read', { file_path: abs(f) }, agent);
+const edit = (f, add, rem, agent) => pre('Edit', { file_path: abs(f), old_string: nLines(rem), new_string: nLines(add) }, agent);
+const stopAgent = (agent) => send({ hook_event_name: 'SubagentStop', ...agent });
+const EXPLORE = { agent_id: 'demo-explore', agent_type: 'Explore' };
+const REVIEW = { agent_id: 'demo-review', agent_type: 'code-reviewer' };
+const DOCS = { agent_id: 'demo-docs', agent_type: 'general-purpose' };
+const EDGE = { agent_id: 'demo-edge', agent_type: 'Explore' };
 
 async function session() {
   ensureDemoProject();
@@ -105,9 +111,9 @@ async function session() {
 
   await pre('Task', { description: 'Explore test setup', subagent_type: 'Explore' });
   await sleep(900);
-  await read('tests/auth.spec.ts'); await sleep(1300);
-  await read('src/auth/auth.ts'); await sleep(1300);
-  await send({ hook_event_name: 'SubagentStop' });
+  await read('tests/auth.spec.ts', EXPLORE); await sleep(1300);
+  await read('src/auth/auth.ts', EXPLORE); await sleep(1300);
+  await stopAgent(EXPLORE);
   await sleep(1200);
 
   await edit('src/payments/stripe.ts', 14, 3); await sleep(2400);
@@ -131,10 +137,23 @@ async function session() {
   await pre('Task', { description: 'Update API docs', subagent_type: 'general-purpose' });
   await sleep(500);
   await pre('Task', { description: 'Check refund edge cases', subagent_type: 'Explore' });
-  await sleep(4500);
-  await send({ hook_event_name: 'SubagentStop' }); await sleep(900);
-  await send({ hook_event_name: 'SubagentStop' }); await sleep(900);
-  await send({ hook_event_name: 'SubagentStop' }); await sleep(1200);
+  await sleep(700);
+  // three subagents working in parallel, each on its own files
+  await read('src/payments/stripe.ts', REVIEW); await sleep(700);
+  await read('src/api/router.ts', DOCS); await sleep(600);
+  await read('src/payments/refund.ts', EDGE); await sleep(800);
+  await read('src/services/orderService.ts', REVIEW); await sleep(700);
+  await pre('Grep', { pattern: 'amount <= 0', path: abs('src') }, EDGE); await sleep(800);
+  await read('src/api/users.ts', DOCS); await sleep(700);
+  await read('src/db/orderRepo.ts', EDGE); await sleep(800);
+  await edit('src/api/router.ts', 8, 1, DOCS); await sleep(900);
+  await read('tests/orders.spec.ts', EDGE); await sleep(900);
+  await stopAgent(EDGE); await sleep(700);
+  const lint = { command: 'npm run lint', description: 'Lint' };
+  await pre('Bash', lint, REVIEW); await sleep(1200);
+  await post('Bash', lint, { stdout: 'No problems', stderr: '' }, REVIEW); await sleep(700);
+  await stopAgent(REVIEW); await sleep(900);
+  await stopAgent(DOCS); await sleep(1200);
 
   await pre('Bash', test); await sleep(2600);
   await post('Bash', test, { stdout: 'PASS tests/auth.spec.ts\nPASS tests/users.spec.ts\nPASS tests/orders.spec.ts\nPASS tests/format.spec.ts\n\nTests:       25 passed, 25 total', stderr: '', interrupted: false });

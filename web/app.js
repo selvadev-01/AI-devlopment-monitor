@@ -2,6 +2,7 @@
 import { GraphModel } from './model.js';
 import { Engine } from './engine.js';
 import { ReplayClock, TimelineUI, SPEEDS } from './replay.js';
+import { AGENT_COLORS } from './fx.js';
 
 const $ = (id) => document.getElementById(id);
 const model = new GraphModel();
@@ -115,6 +116,31 @@ function renderModules() {
   }));
 }
 
+const agentColor = (i) => AGENT_COLORS[(i ?? 0) % AGENT_COLORS.length];
+
+function renderAgents() {
+  const list = [...model.agents.values()];
+  $('agent-count').textContent = list.length;
+  if (!list.length) { $('agents').innerHTML = '<li class="empty">No subagents running</li>'; return; }
+  $('agents').replaceChildren(...list.map((a) => {
+    const li = document.createElement('li');
+    li.style.setProperty('--c', agentColor(a.color));
+    const dot = document.createElement('span'); dot.className = 'dot';
+    const body = document.createElement('div'); body.style.minWidth = '0';
+    const row = document.createElement('div'); row.className = 'row';
+    const type = document.createElement('span'); type.className = 'type'; type.textContent = a.type;
+    const tools = document.createElement('span'); tools.className = 'tools'; tools.textContent = `${a.tools} tool${a.tools === 1 ? '' : 's'}`;
+    row.append(type, tools);
+    const task = document.createElement('div'); task.className = 'task'; task.textContent = a.label || ''; task.title = a.label || '';
+    const last = document.createElement('div'); last.className = 'last'; last.textContent = a.last || '';
+    body.append(row, task, last);
+    li.append(dot, body);
+    li.title = a.file ? `Focus ${a.file}` : a.label || '';
+    if (a.file) li.addEventListener('click', () => engine.focusFile(a.file));
+    return li;
+  }));
+}
+
 const changedOrder = new Map();
 function renderChanged() {
   const ul = $('changed');
@@ -172,7 +198,15 @@ function feedItem(ev, fresh) {
   const top = document.createElement('div'); top.className = 'ev-top';
   const kind = document.createElement('span'); kind.className = 'ev-kind'; kind.textContent = kindLabel(ev);
   const t = document.createElement('span'); t.className = 'ev-time'; t.textContent = time(ev.ts);
-  top.append(kind, t);
+  top.append(kind);
+  if (ev.agent || (ev.kind === 'agent_start' && ev.agentType)) {
+    const chip = document.createElement('span');
+    chip.className = 'chip agent-chip';
+    chip.style.setProperty('--c', agentColor(ev.agentColor));
+    chip.textContent = ev.agentType || 'subagent';
+    top.append(chip);
+  }
+  top.append(t);
   const detail = document.createElement('div'); detail.className = 'ev-detail';
   detail.textContent = ev.detail || ''; detail.title = ev.detail || '';
   body.append(top, detail);
@@ -350,7 +384,7 @@ function resetReplayState(i) {
   resetFeed(done.slice(-150));
   if (done.length) renderNow(done[done.length - 1]);
   else renderNow({ kind: 'session', detail: 'Start of session' });
-  renderModules(); renderChanged(); renderSummary(replaySummary(done));
+  renderModules(); renderChanged(); renderAgents(); renderSummary(replaySummary(done));
 }
 
 function playReplayEvent(ev) {
@@ -360,6 +394,7 @@ function playReplayEvent(ev) {
   pushFeed(ev, true);
   renderNow(ev);
   if (ev.kind === 'edit' || ev.kind === 'create' || ev.kind === 'test_result') { renderModules(); renderChanged(); }
+  if (ev.agent || ev.kind.startsWith('agent')) renderAgents();
   renderSummary(replaySummary(rclock.events.slice(0, rclock.i)));
 }
 
@@ -433,7 +468,7 @@ function onHello(msg) {
   const last = msg.events?.[msg.events.length - 1];
   if (last) { renderNow(last); lastKind = last.kind; lastEventAt = Date.parse(last.ts); }
   if (model.nodes.size) engine.setTheme(theme);
-  renderModules(); renderChanged(); renderSummary(msg.summary);
+  renderModules(); renderChanged(); renderAgents(); renderSummary(msg.summary);
   updateLiveTimeline();
   refreshSessions();
 }
@@ -465,6 +500,7 @@ function onEvent(msg) {
   lastEventAt = Date.now(); lastKind = ev.kind;
   renderStatus();
   if (ev.kind === 'edit' || ev.kind === 'create' || ev.kind === 'test_result') { renderModules(); renderChanged(); }
+  if (ev.agent || ev.kind.startsWith('agent')) renderAgents();
   renderSummary(msg.summary);
   updateLiveTimeline();
   if (ev.kind === 'session') refreshSessions();

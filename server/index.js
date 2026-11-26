@@ -46,7 +46,9 @@ class Project {
     this.modified = new Set();
     this.created = new Set();
     this.lastTest = null;
-    this.activeAgents = 0;
+    this.agents = new Map();      // subagent id -> { id, type, label, color, startId, tools }
+    this.pendingAgents = [];      // launched (Agent tool) but no tool call seen yet, so no id yet
+    this.nextAgentColor = 0;
     this.lastActive = Date.now();
     this.watcher = null;
     this.rescanTimer = null;
@@ -79,8 +81,38 @@ class Project {
       modified: this.modified.size,
       created: this.created.size,
       lastTest: this.lastTest,
-      activeAgents: this.activeAgents,
+      activeAgents: this.agents.size + this.pendingAgents.length,
     };
+  }
+
+  /**
+   * Tag an event with its subagent (id, type, label, colour). A launch has no id yet, so it waits
+   * in pendingAgents; the subagent's first tool call claims it (same type first, else oldest) and
+   * carries agentStartId so viewers can link the launch to the running agent.
+   */
+  trackAgent(event, ev) {
+    if (event.kind === 'agent_start') {
+      const pend = { startId: event.id, type: ev.launchType, label: ev.detail, color: this.nextAgentColor++ % 5 };
+      this.pendingAgents.push(pend);
+      Object.assign(event, { agent: null, agentParent: ev.agent, agentType: pend.type, agentLabel: pend.label, agentColor: pend.color });
+      return;
+    }
+    if (!ev.agent) return;
+    let a = this.agents.get(ev.agent);
+    if (!a) {
+      let i = this.pendingAgents.findIndex((x) => x.type === ev.agentType);
+      if (i < 0 && this.pendingAgents.length) i = 0;
+      const pend = i >= 0 ? this.pendingAgents.splice(i, 1)[0] : null;
+      a = {
+        id: ev.agent, type: ev.agentType || pend?.type || 'agent', label: pend?.label || ev.agentType || 'Subagent',
+        color: pend ? pend.color : this.nextAgentColor++ % 5, startId: pend?.startId ?? null, tools: 0,
+      };
+      this.agents.set(a.id, a);
+      event.agentStartId = a.startId;
+    }
+    if (event.kind !== 'agent_stop') a.tools++;
+    Object.assign(event, { agent: a.id, agentType: a.type, agentLabel: a.label, agentColor: a.color, agentTools: a.tools });
+    if (event.kind === 'agent_stop') this.agents.delete(a.id);
   }
 
   hello() {
@@ -192,9 +224,7 @@ function ingest(payload) {
     }
   }
   if (event.kind === 'test_result') p.lastTest = { ok: event.ok, ...event.stats, ts: event.ts };
-  if (event.kind === 'agent_start') p.activeAgents++;
-  if (event.kind === 'agent_stop') p.activeAgents = Math.max(0, p.activeAgents - 1);
-  if (event.kind === 'idle') p.activeAgents = 0;
+  p.trackAgent(event, ev);
 
   p.events.push(event);
   if (p.events.length > MAX_EVENTS) p.events.shift();
@@ -207,7 +237,7 @@ function ingest(payload) {
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml',
-  '.png': 'image/png', '.woff2': 'font/woff2',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2',
 };
 
 function serveFile(res, baseDir, relPath) {
@@ -261,7 +291,7 @@ const handler = async (req, res) => {
         follow: projects.get(followKey)?.root || null,
         projects: [...projects.values()].sort((a, b) => b.lastActive - a.lastActive).map((p) => ({
           root: p.root, name: path.basename(p.root), lastActive: new Date(p.lastActive).toISOString(),
-          events: p.events.length, activeAgents: p.activeAgents,
+          events: p.events.length, activeAgents: p.agents.size + p.pendingAgents.length,
         })),
       });
     }

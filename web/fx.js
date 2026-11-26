@@ -45,6 +45,15 @@ export const glowTexture = () => canvasTexture('glow', 128, (g, s) => {
   g.fillStyle = r; g.fillRect(0, 0, s, s);
 });
 
+/** Solid round dot with a soft edge: keeps point particles round (not square) up close. */
+export const dotTexture = () => canvasTexture('dot', 64, (g, s) => {
+  const r = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  r.addColorStop(0, 'rgba(255,255,255,1)');
+  r.addColorStop(0.55, 'rgba(255,255,255,0.9)');
+  r.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, s, s);
+});
+
 export const ringTexture = () => canvasTexture('ring', 256, (g, s) => {
   const r = g.createRadialGradient(s / 2, s / 2, s * 0.36, s / 2, s / 2, s / 2);
   r.addColorStop(0, 'rgba(255,255,255,0)');
@@ -66,6 +75,27 @@ export const nebulaTexture = (seed = 1) => canvasTexture('nebula' + seed, 256, (
     g.fillStyle = r; g.fillRect(0, 0, s, s);
   }
 });
+
+/** Texture from web/textures/<name>.jpg (generated locally with ComfyUI), cached and wrap-repeating. */
+const loader = new THREE.TextureLoader();
+export function loadTex(name, { color = true } = {}) {
+  const key = 'file:' + name;
+  if (texCache.has(key)) return texCache.get(key);
+  const t = loader.load(`/textures/${name}.jpg`);
+  t.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  texCache.set(key, t);
+  return t;
+}
+
+/** Large inside-out sphere showing an equirectangular panorama behind the scene. */
+export function skySphere(name, radius, tint = 0xffffff) {
+  const mat = new THREE.MeshBasicMaterial({ map: loadTex(name), side: THREE.BackSide, depthWrite: false, fog: false, color: tint });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 48, 24), mat);
+  mesh.renderOrder = -1;
+  return mesh;
+}
 
 export function glowSprite(color, size, opacity = 1) {
   const m = new THREE.SpriteMaterial({ map: glowTexture(), color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
