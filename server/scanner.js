@@ -42,8 +42,10 @@ export function assignModules(ids) {
     if (!prefixes.has(label)) prefixes.set(label, prefix);
   };
   // Returns the biggest module created for this subtree as { label, prefix, size }.
-  const split = (list, depth, label, prefix) => {
-    if (label && list.length <= MAX_MODULE) { put(list, label, prefix); return { label, prefix, size: list.length }; }
+  // descend: the folder is a wrapper inside a folder that had to split, so it shares its parent's
+  // label; stopping here would merge sibling wrappers ("(marketing)", "[locale]") into one big module.
+  const split = (list, depth, label, prefix, descend = false) => {
+    if (label && list.length <= MAX_MODULE && !descend) { put(list, label, prefix); return { label, prefix, size: list.length }; }
     const groups = new Map(); const here = [];
     for (const id of list) {
       const parts = id.split('/');
@@ -55,8 +57,9 @@ export function assignModules(ids) {
     let biggest = null;
     for (const [seg, sub] of groups) {
       if (label && sub.length < MIN_MODULE) { here.push(...sub); continue; }
-      const subLabel = isWrapper(seg) ? label : (label ? `${label}/${seg}` : seg);
-      const b = split(sub, depth + 1, subLabel, `${prefix}${seg}/`);
+      const wrap = isWrapper(seg);
+      const subLabel = wrap ? label : (label ? `${label}/${seg}` : seg);
+      const b = split(sub, depth + 1, subLabel, `${prefix}${seg}/`, wrap && Boolean(label));
       if (!biggest || b.size > biggest.size) biggest = b;
     }
     if (!here.length) return biggest;
