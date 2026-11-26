@@ -4,8 +4,12 @@
   "private": true,
   "description": "Live 3D visualization of what Claude Code is doing in your project (Neural + Galaxy themes).",
   "type": "module",
+  "bin": {
+    "adm": "bin/adm.js"
+  },
   "scripts": {
     "start": "node server/index.js",
+    "adm": "node bin/adm.js",
     "demo": "node scripts/simulate.js",
     "hooks:install": "node scripts/install-hooks.js",
     "hooks:uninstall": "node scripts/install-hooks.js --uninstall",

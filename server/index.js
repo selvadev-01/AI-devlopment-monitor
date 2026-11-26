@@ -21,6 +21,9 @@ const HOST = '127.0.0.1';
 const MAX_EVENTS = 500;
 const MAX_PROJECTS = 12;
 let quiet = false;
+let standalone = false; // true when run as its own process (npm start / adm), false inside VS Code
+let listenPort = null;
+const startedAt = Date.now();
 const log = (...a) => { if (!quiet) console.log(...a); };
 
 const keyOf = (root) => {
@@ -330,6 +333,13 @@ const handler = async (req, res) => {
       setFollow(p);
       return json(res, 200, p.summary());
     }
+    if (req.method === 'GET' && url.pathname === '/api/health') {
+      // lets `adm` and the auto-start hook tell this monitor apart from another program on the port
+      return json(res, 200, {
+        app: 'ai-dev-monitor', pid: process.pid, port: listenPort, standalone,
+        uptime: Math.round((Date.now() - startedAt) / 1000), follow: projects.get(followKey)?.root || null,
+      });
+    }
     if (req.method === 'GET' && url.pathname === '/api/state') {
       const p = pickProject(url);
       if (!p) return json(res, 200, { project: null, summary: null, graph: null, events: [] });
@@ -392,6 +402,7 @@ export function startServer({ port = 7777, project, dataDir, silent = false } = 
     server.once('error', reject);
     server.listen(port, HOST, () => {
       server.off('error', reject);
+      listenPort = port;
       wss = new WebSocketServer({ server, path: '/ws' });
       wss.on('connection', (ws, req) => {
         const dirParam = new URL(req.url, `http://${HOST}`).searchParams.get('project');
@@ -419,7 +430,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const i = process.argv.indexOf('--project');
   const project = i > -1 ? process.argv[i + 1] : process.env.MONITOR_PROJECT || process.cwd();
   const port = Number(process.env.MONITOR_PORT || 7777);
-  startServer({ port, project }).catch((err) => {
+  standalone = true;
+  // pid file: `adm stop` uses it to stop a standalone server (never the one inside VS Code)
+  const pidFile = path.join(APP_ROOT, 'data', `server-${port}.pid`);
+  startServer({ port, project }).then(() => {
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, port }));
+    const cleanup = () => { try { if (JSON.parse(fs.readFileSync(pidFile, 'utf8')).pid === process.pid) fs.rmSync(pidFile); } catch { /* gone */ } };
+    process.on('exit', cleanup);
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(sig, () => process.exit(0));
+  }).catch((err) => {
     if (err.code === 'EADDRINUSE') console.error(`[monitor] port ${port} is already in use. Is the monitor already running?`);
     else console.error('[monitor]', err);
     process.exit(1);

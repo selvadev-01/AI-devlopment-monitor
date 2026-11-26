@@ -55,6 +55,22 @@ Each subagent is matched to the exact Task/Agent call that launched it: Claude C
 
 With many subagents at once, every agent gets its own colour (ten colours), crowded tags shrink to coloured dots, the overview pulls back so every ship stays in frame, the activity feed groups their parallel actions ("READ · 10 agents"), and the Subagents panel switches to one line per agent.
 
+## Claude Code in a terminal (CLI)
+
+The hooks are installed in `~/.claude/settings.json`, so `claude` in any terminal reports to the monitor just like the VS Code extension does. A `SessionStart` hook (`scripts/ensure-server.js`, async, never blocks Claude) starts the monitor in the background when it is not running, so there is no `npm start` to remember. VS Code and the terminal share one monitor on port 7777.
+
+Run `npm link` once in this folder to get the `adm` command:
+
+```bash
+adm              # start the monitor if needed and open it for the current folder
+adm open [dir]   # open it for another folder (one browser tab per project)
+adm start        # start it in the background, no browser
+adm status       # running? where? which projects has it seen?
+adm stop         # stop a monitor started from the terminal (the VS Code one stops with VS Code)
+```
+
+The background monitor logs to `data/server.log`. Install the hooks without the auto-start with `node scripts/install-hooks.js --no-autostart`.
+
 ## Connect Claude Code
 
 The monitor gets its events from Claude Code hooks. To install them:
