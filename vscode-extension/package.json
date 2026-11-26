@@ -24,6 +24,11 @@
           "default": 7777,
           "description": "Port of the local monitor server. The Claude Code hooks send events to this port."
         },
+        "aiDevMonitor.autoOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the monitor panel automatically when a Claude Code session starts in this window's workspace. The panel opens beside the editor without taking focus."
+        },
         "aiDevMonitor.autoStart": {
           "type": "boolean",
           "default": true,

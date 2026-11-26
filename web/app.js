@@ -5,6 +5,10 @@ import { ReplayClock, TimelineUI, SPEEDS } from './replay.js';
 
 const $ = (id) => document.getElementById(id);
 const model = new GraphModel();
+// ?project=<folder> pins this view to one project (one panel per project when working in parallel).
+// Without it the view follows whichever project Claude was most recently started in.
+const PROJECT = new URLSearchParams(location.search).get('project');
+const Q = PROJECT ? `?project=${encodeURIComponent(PROJECT)}` : '';
 const ICONS = {
   read: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
@@ -277,7 +281,7 @@ const timeline = new TimelineUI({
 
 async function refreshSessions() {
   try {
-    const r = await (await fetch('/api/sessions')).json();
+    const r = await (await fetch(`/api/sessions${Q}`)).json();
     liveSessionId = r.live;
     if (!selectedKey || !r.sessions.some((s) => s.key === selectedKey)) {
       selectedKey = (r.sessions.find((s) => s.session === r.live) || r.sessions[0])?.key || null;
@@ -374,7 +378,7 @@ async function goLive() {
   pending = 0;
   timeline.setPending(0);
   timeline.setMode('live', false);
-  try { onHello(await (await fetch('/api/state')).json()); } catch { /* reconnect will refresh */ }
+  try { onHello(await (await fetch(`/api/state${Q}`)).json()); } catch { /* reconnect will refresh */ }
   renderStatus();
 }
 
@@ -431,6 +435,7 @@ function onHello(msg) {
   if (model.nodes.size) engine.setTheme(theme);
   renderModules(); renderChanged(); renderSummary(msg.summary);
   updateLiveTimeline();
+  refreshSessions();
 }
 
 function onGraph(msg) {
@@ -467,7 +472,7 @@ function onEvent(msg) {
 
 let retry = 500;
 function connect() {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws${Q}`);
   ws.onopen = () => { wsOpen = true; retry = 500; renderStatus(); };
   ws.onclose = () => { wsOpen = false; renderStatus(); setTimeout(connect, retry); retry = Math.min(retry * 2, 8000); };
   ws.onmessage = (e) => {

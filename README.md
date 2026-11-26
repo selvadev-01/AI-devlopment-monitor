@@ -60,6 +60,15 @@ Once installed, the extension starts the monitor server inside VS Code, so you d
 - **Commands**: `AI Dev Monitor: Open Monitor`, `Show This Workspace`, `Open in Browser`.
 - **Settings**: `aiDevMonitor.port` (default 7777) and `aiDevMonitor.autoStart` (default on).
 
+## Several projects in parallel
+
+The server keeps a separate live state for every project: graph, events, changed files, tests and agents. Each hook event goes to its project through the Claude session it belongs to, so two or three Claude sessions working on different projects never mix.
+
+- **VS Code**: every window's panel (`AI Monitor · <folder>`) and status bar show only that window's workspace. With `aiDevMonitor.autoOpen` on (the default), the panel opens without taking focus, and only in the window whose folder the Claude session started in.
+- **Browser**: open `http://localhost:7777/?project=D:/path/to/project` to pin a tab to one project. Plain `http://localhost:7777` follows whichever project Claude was most recently started in.
+- **Nested folders**: a folder inside another project, like `data/demo-project` here, counts as its own project when you open it as a workspace or start a Claude session in it.
+- `GET /api/projects` lists the projects the server is tracking. It keeps up to 12 and drops the least recently active ones that nobody is viewing.
+
 ## How it works
 
 ```

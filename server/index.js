@@ -1,6 +1,8 @@
 // AI Development Monitor server.
-// Receives Claude Code hook events (POST /event), keeps a project graph, and streams
-// both to the browser over WebSocket (/ws). Binds to 127.0.0.1 only.
+// Receives Claude Code hook events (POST /event) and keeps one live state per project, so several
+// Claude sessions working on different projects in parallel each get their own view.
+// Browsers subscribe over WebSocket: /ws?project=<folder> for one project, or plain /ws to follow
+// whichever project Claude was most recently started in. Binds to 127.0.0.1 only.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,87 +19,154 @@ const THREE_DIR = path.join(APP_ROOT, 'node_modules', 'three');
 let LOG_FILE = path.join(APP_ROOT, 'data', 'events.jsonl');
 const HOST = '127.0.0.1';
 const MAX_EVENTS = 500;
+const MAX_PROJECTS = 12;
 let quiet = false;
 const log = (...a) => { if (!quiet) console.log(...a); };
 
-const state = {
-  root: null,
-  graph: null,
-  events: [],
-  modified: new Set(),
-  created: new Set(),
-  lastTest: null,
-  activeAgents: 0,
-  nextId: 1,
+const keyOf = (root) => {
+  const r = path.resolve(root).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? r.toLowerCase() : r;
 };
-
-// ---------------------------------------------------------------- project / graph
-let watcher = null;
-let rescanTimer = null;
-
-function setProject(root) {
-  const abs = path.resolve(root);
-  if (state.root === abs) return;
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) return;
-  state.root = abs;
-  state.modified.clear();
-  state.created.clear();
-  state.lastTest = null;
-  state.graph = scanProject(abs);
-  log(`[monitor] project: ${abs} (${state.graph.nodes.length} files, ${state.graph.edges.length} links)`);
-  watchProject(abs);
-  broadcast({ type: 'graph', graph: state.graph, reset: true, summary: summary() });
-}
-
+const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 const IGNORED_SEGMENTS = /(^|[\\/])(node_modules|\.git|dist|build|\.next|coverage|__pycache__|\.venv|data)([\\/]|$)/;
 
-function watchProject(root) {
-  try { watcher?.close(); } catch { /* already closed */ }
-  try {
-    watcher = fs.watch(root, { recursive: true }, (_evt, filename) => {
-      if (!filename || IGNORED_SEGMENTS.test(filename)) return;
-      clearTimeout(rescanTimer);
-      rescanTimer = setTimeout(rescan, 1200);
-    });
-  } catch (err) {
-    log('[monitor] file watching unavailable:', err.message);
+let nextId = 1;
+let wss = null;
+let followKey = null;                 // project shown to clients that did not pick one
+const projects = new Map();           // key -> Project
+const sessionProject = new Map();     // Claude session id -> project key
+
+// ---------------------------------------------------------------- per-project state
+class Project {
+  constructor(root) {
+    this.root = path.resolve(root);
+    this.key = keyOf(root);
+    this.graph = scanProject(this.root);
+    this.events = [];
+    this.modified = new Set();
+    this.created = new Set();
+    this.lastTest = null;
+    this.activeAgents = 0;
+    this.lastActive = Date.now();
+    this.watcher = null;
+    this.rescanTimer = null;
+    log(`[monitor] project: ${this.root} (${this.graph.nodes.length} files, ${this.graph.edges.length} links)`);
+    try {
+      this.watcher = fs.watch(this.root, { recursive: true }, (_evt, filename) => {
+        if (!filename || IGNORED_SEGMENTS.test(filename)) return;
+        clearTimeout(this.rescanTimer);
+        this.rescanTimer = setTimeout(() => this.rescan(), 1200);
+      });
+    } catch (err) {
+      log('[monitor] file watching unavailable:', err.message);
+    }
+  }
+
+  rescan() {
+    const prev = this.graph;
+    const next = scanProject(this.root);
+    const sig = (g) => g.nodes.length + ':' + g.edges.length + ':' + g.nodes.reduce((s, n) => s + n.loc, 0);
+    this.graph = next;
+    if (sig(prev) !== sig(next)) send(this.key, { type: 'graph', graph: next, reset: false, summary: this.summary() });
+  }
+
+  summary() {
+    return {
+      project: this.graph?.name || path.basename(this.root),
+      root: this.root,
+      files: this.graph?.nodes.length || 0,
+      links: this.graph?.edges.length || 0,
+      modified: this.modified.size,
+      created: this.created.size,
+      lastTest: this.lastTest,
+      activeAgents: this.activeAgents,
+    };
+  }
+
+  hello() {
+    return { type: 'hello', project: this.root, graph: this.graph, events: this.events.slice(-150), summary: this.summary() };
+  }
+
+  close() {
+    clearTimeout(this.rescanTimer);
+    try { this.watcher?.close(); } catch { /* already closed */ }
   }
 }
 
-function rescan() {
-  if (!state.root) return;
-  const next = scanProject(state.root);
-  const prev = state.graph;
-  const sig = (g) => g.nodes.length + ':' + g.edges.length + ':' + g.nodes.reduce((s, n) => s + n.loc, 0);
-  state.graph = next;
-  if (!prev || sig(prev) !== sig(next)) broadcast({ type: 'graph', graph: next, reset: false, summary: summary() });
+function subscribers(key) {
+  let n = 0;
+  if (wss) for (const c of wss.clients) if (c.projectKey === key || (c.follow && followKey === key)) n++;
+  return n;
 }
 
-function summary() {
-  return {
-    project: state.graph?.name || null,
-    root: state.root,
-    files: state.graph?.nodes.length || 0,
-    links: state.graph?.edges.length || 0,
-    modified: state.modified.size,
-    created: state.created.size,
-    lastTest: state.lastTest,
-    activeAgents: state.activeAgents,
-  };
+function evict() {
+  while (projects.size > MAX_PROJECTS) {
+    const victim = [...projects.values()]
+      .filter((p) => p.key !== followKey && !subscribers(p.key))
+      .sort((a, b) => a.lastActive - b.lastActive)[0];
+    if (!victim) return;
+    victim.close();
+    projects.delete(victim.key);
+  }
+}
+
+/**
+ * Project for `dir`. With exact=false a known project that contains `dir` is reused (Claude may
+ * run a command from a subfolder); exact=true always uses `dir` itself, so a nested repo opened
+ * as its own workspace or started as its own Claude session stays a separate project.
+ */
+function projectFor(dir, { create = true, exact = false } = {}) {
+  if (!dir) return null;
+  const k = keyOf(dir);
+  if (projects.has(k)) return projects.get(k);
+  let best = null;
+  if (!exact) {
+    for (const p of projects.values()) {
+      if (k.startsWith(p.key + path.sep) && (!best || p.key.length > best.key.length)) best = p;
+    }
+  }
+  if (best || !create || !isDir(dir)) return best;
+  const p = new Project(dir);
+  projects.set(p.key, p);
+  evict();
+  return p;
+}
+
+function setFollow(p) {
+  if (!p || followKey === p.key) return;
+  followKey = p.key;
+  if (!wss) return;
+  const data = JSON.stringify(p.hello());
+  for (const c of wss.clients) if (c.follow && c.readyState === 1) c.send(data);
+}
+
+function send(key, msg) {
+  if (!wss) return;
+  const data = JSON.stringify(msg);
+  for (const c of wss.clients) {
+    if (c.readyState === 1 && (c.projectKey === key || (c.follow && followKey === key))) c.send(data);
+  }
 }
 
 // ---------------------------------------------------------------- events
 function ingest(payload) {
-  // Follow Claude to whichever project it is working in.
-  if (payload?.cwd && !state.root) setProject(payload.cwd);
-  else if (payload?.cwd && payload.hook_event_name === 'SessionStart' && path.resolve(payload.cwd) !== state.root) setProject(payload.cwd);
+  const sid = payload?.session_id;
+  let p = null;
+  if (payload?.hook_event_name === 'SessionStart' && payload.cwd) p = projectFor(payload.cwd, { exact: true });
+  if (!p && sid && sessionProject.has(sid)) p = projects.get(sessionProject.get(sid)) || null;
+  if (!p && payload?.cwd) p = projectFor(payload.cwd);
+  if (!p && followKey) p = projects.get(followKey) || null;
+  if (!p) return null;
+  if (sid) sessionProject.set(sid, p.key);
+  if (payload.hook_event_name === 'SessionStart' || !followKey) setFollow(p);
 
   const ev = normalizeHook(payload);
   if (!ev) return null;
+  p.lastActive = Date.now();
 
-  const rel = ev.file ? toRel(state.root, ev.file) : null;
+  const rel = ev.file ? toRel(p.root, ev.file) : null;
   const event = {
-    id: state.nextId++,
+    id: nextId++,
     ts: new Date().toISOString(),
     kind: ev.kind,
     tool: ev.tool,
@@ -110,27 +179,27 @@ function ingest(payload) {
     failingFiles: ev.failingFiles || [],
     agentType: ev.agentType || null,
     session: ev.session,
-    root: state.root,
+    root: p.root,
   };
 
-  if (rel && (event.kind === 'edit' || event.kind === 'create')) state.modified.add(rel);
+  if (rel && (event.kind === 'edit' || event.kind === 'create')) p.modified.add(rel);
   if (rel && event.kind === 'create') {
-    state.created.add(rel);
-    if (state.graph && !state.graph.nodes.some((n) => n.id === rel)) {
+    p.created.add(rel);
+    if (!p.graph.nodes.some((n) => n.id === rel)) {
       const node = { id: rel, name: path.posix.basename(rel), module: moduleOf(rel), loc: event.stats?.added || 1 };
-      state.graph.nodes.push(node);
+      p.graph.nodes.push(node);
       event.node = node;
     }
   }
-  if (event.kind === 'test_result') state.lastTest = { ok: event.ok, ...event.stats, ts: event.ts };
-  if (event.kind === 'agent_start') state.activeAgents++;
-  if (event.kind === 'agent_stop') state.activeAgents = Math.max(0, state.activeAgents - 1);
-  if (event.kind === 'idle') state.activeAgents = 0;
+  if (event.kind === 'test_result') p.lastTest = { ok: event.ok, ...event.stats, ts: event.ts };
+  if (event.kind === 'agent_start') p.activeAgents++;
+  if (event.kind === 'agent_stop') p.activeAgents = Math.max(0, p.activeAgents - 1);
+  if (event.kind === 'idle') p.activeAgents = 0;
 
-  state.events.push(event);
-  if (state.events.length > MAX_EVENTS) state.events.shift();
+  p.events.push(event);
+  if (p.events.length > MAX_EVENTS) p.events.shift();
   fs.appendFile(LOG_FILE, JSON.stringify(event) + '\n', () => {});
-  broadcast({ type: 'event', event, summary: summary() });
+  send(p.key, { type: 'event', event, summary: p.summary() });
   return event;
 }
 
@@ -162,6 +231,12 @@ function readBody(req, limit = 2 * 1024 * 1024) {
 
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
+/** ?project=<dir> picks a project; without it, the followed project. */
+function pickProject(url) {
+  const dir = url.searchParams.get('project');
+  return dir ? projectFor(dir, { exact: true }) : projects.get(followKey) || null;
+}
+
 const handler = async (req, res) => {
   const url = new URL(req.url, `http://${HOST}`);
   try {
@@ -171,14 +246,30 @@ const handler = async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/project') {
       const { root } = JSON.parse(await readBody(req));
-      setProject(root);
-      return json(res, 200, summary());
+      const p = projectFor(root, { exact: true });
+      if (!p) return json(res, 404, { ok: false, error: 'project folder not found' });
+      setFollow(p);
+      return json(res, 200, p.summary());
     }
     if (req.method === 'GET' && url.pathname === '/api/state') {
-      return json(res, 200, { summary: summary(), graph: state.graph, events: state.events });
+      const p = pickProject(url);
+      if (!p) return json(res, 200, { project: null, summary: null, graph: null, events: [] });
+      return json(res, 200, { project: p.root, summary: p.summary(), graph: p.graph, events: p.events });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/projects') {
+      return json(res, 200, {
+        follow: projects.get(followKey)?.root || null,
+        projects: [...projects.values()].sort((a, b) => b.lastActive - a.lastActive).map((p) => ({
+          root: p.root, name: path.basename(p.root), lastActive: new Date(p.lastActive).toISOString(),
+          events: p.events.length, activeAgents: p.activeAgents,
+        })),
+      });
     }
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
-      return json(res, 200, { sessions: listSessions(LOG_FILE), live: state.events.at(-1)?.session || null });
+      const p = pickProject(url);
+      const all = listSessions(LOG_FILE);
+      const sessions = p ? all.filter((s) => !s.root || keyOf(s.root) === p.key) : all;
+      return json(res, 200, { sessions, live: p?.events.at(-1)?.session || null });
     }
     if (req.method === 'GET' && url.pathname === '/api/replay') {
       const seg = sessionEvents(LOG_FILE, url.searchParams.get('key') || '');
@@ -187,8 +278,9 @@ const handler = async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/graph') {
       const root = url.searchParams.get('root');
-      if (!root || path.resolve(root) === state.root) return json(res, 200, { graph: state.graph });
-      if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return json(res, 404, { ok: false, error: 'project folder not found' });
+      const known = root ? projects.get(keyOf(root)) : projects.get(followKey);
+      if (known) return json(res, 200, { graph: known.graph });
+      if (!root || !isDir(root)) return json(res, 404, { ok: false, error: 'project folder not found' });
       return json(res, 200, { graph: scanProject(path.resolve(root)) });
     }
     if (req.method === 'GET' && url.pathname.startsWith('/vendor/three/')) {
@@ -204,25 +296,17 @@ const handler = async (req, res) => {
   }
 };
 
-// ---------------------------------------------------------------- websocket
-let wss = null;
-function broadcast(msg) {
-  if (!wss) return;
-  const data = JSON.stringify(msg);
-  for (const c of wss.clients) if (c.readyState === 1) c.send(data);
-}
-
 /**
  * Start the monitor. Used by the CLI below and by the VS Code extension (in-process).
  * Rejects with err.code === 'EADDRINUSE' when another monitor already owns the port.
- * @returns {Promise<{port:number, close:() => Promise<void>, setProject:(dir:string)=>void}>}
+ * @returns {Promise<{port:number, close:() => Promise<void>}>}
  */
 export function startServer({ port = 7777, project, dataDir, silent = false } = {}) {
   quiet = silent;
   const dir = dataDir || path.join(APP_ROOT, 'data');
   fs.mkdirSync(dir, { recursive: true });
   LOG_FILE = path.join(dir, 'events.jsonl');
-  state.nextId = Math.max(state.nextId, maxEventId(LOG_FILE) + 1); // ids stay unique across restarts
+  nextId = Math.max(nextId, maxEventId(LOG_FILE) + 1); // ids stay unique across restarts
 
   const server = http.createServer(handler);
   return new Promise((resolve, reject) => {
@@ -230,16 +314,18 @@ export function startServer({ port = 7777, project, dataDir, silent = false } = 
     server.listen(port, HOST, () => {
       server.off('error', reject);
       wss = new WebSocketServer({ server, path: '/ws' });
-      wss.on('connection', (ws) => {
-        ws.send(JSON.stringify({ type: 'hello', graph: state.graph, events: state.events.slice(-150), summary: summary() }));
+      wss.on('connection', (ws, req) => {
+        const dirParam = new URL(req.url, `http://${HOST}`).searchParams.get('project');
+        const p = dirParam ? projectFor(dirParam, { exact: true }) : projects.get(followKey) || null;
+        if (dirParam && p) ws.projectKey = p.key; else ws.follow = true;
+        ws.send(JSON.stringify(p ? p.hello() : { type: 'hello', project: null, graph: null, events: [], summary: null }));
       });
-      if (project) setProject(project);
+      if (project) setFollow(projectFor(project, { exact: true }));
       log(`[monitor] open http://localhost:${port}`);
       resolve({
         port,
-        setProject,
         close: () => new Promise((done) => {
-          try { watcher?.close(); } catch { /* already closed */ }
+          for (const p of projects.values()) p.close();
           for (const c of wss.clients) c.terminate();
           wss.close();
           server.close(() => done());

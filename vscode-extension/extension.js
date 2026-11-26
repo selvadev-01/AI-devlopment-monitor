@@ -20,6 +20,9 @@ let output = null;
 const cfg = () => vscode.workspace.getConfiguration('aiDevMonitor');
 const port = () => cfg().get('port', 7777);
 const workspaceRoot = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+// Each window pins its views to its own workspace, so parallel Claude sessions in different
+// projects each get their own panel and status bar.
+const projectQuery = () => (workspaceRoot() ? `?project=${encodeURIComponent(workspaceRoot())}` : '');
 const log = (msg) => output?.appendLine(`[${new Date().toLocaleTimeString()}] ${msg}`);
 
 function request(method, urlPath, body) {
@@ -95,13 +98,16 @@ function connectSocket() {
   if (stopped) return;
   const WebSocket = require('ws');
   try { socket?.terminate(); } catch { /* ignore */ }
-  socket = new WebSocket(`ws://127.0.0.1:${port()}/ws`);
+  socket = new WebSocket(`ws://127.0.0.1:${port()}/ws${projectQuery()}`);
   socket.on('open', () => { retryMs = 1000; });
   socket.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.type === 'hello') showStatus(msg.events?.[msg.events.length - 1]);
-    else if (msg.type === 'event') showStatus(msg.event);
+    else if (msg.type === 'event') {
+      showStatus(msg.event);
+      maybeAutoOpen(msg.event);
+    }
   });
   socket.on('error', () => { /* handled by close */ });
   socket.on('close', () => {
@@ -116,25 +122,41 @@ function connectSocket() {
   });
 }
 
+// ------------------------------------------------------------------ auto open
+const norm = (p) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+
+/** True when the Claude project and one of this window's folders contain each other. */
+function belongsToThisWindow(root) {
+  if (!root) return false;
+  const r = norm(root);
+  return (vscode.workspace.workspaceFolders || []).some((f) => {
+    const w = norm(f.uri.fsPath);
+    return r === w || r.startsWith(w + path.sep) || w.startsWith(r + path.sep);
+  });
+}
+
+function maybeAutoOpen(ev) {
+  if (ev.kind !== 'session' || !cfg().get('autoOpen', true)) return;
+  if (!belongsToThisWindow(ev.root)) return;
+  log(`Claude session started in ${ev.root}: opening panel`);
+  openPanel({ preserveFocus: true });
+}
+
 // ------------------------------------------------------------------ panel
-async function openPanel() {
-  if (panel) { panel.reveal(vscode.ViewColumn.Beside); return; }
+async function openPanel({ preserveFocus = false } = {}) {
+  if (panel) { panel.reveal(vscode.ViewColumn.Beside, preserveFocus); return; }
   try {
     await ensureServer();
   } catch (err) {
     vscode.window.showErrorMessage(`AI Dev Monitor could not start its server: ${err.message}`);
     return;
   }
-  // A fresh server with no Claude activity yet should show the open workspace.
-  try {
-    const st = await request('GET', '/api/state');
-    if (workspaceRoot() && st.json && st.json.events.length === 0) await request('POST', '/api/project', { root: workspaceRoot() });
-  } catch { /* the server follows Claude's cwd anyway */ }
-
   const external = await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${port()}/`));
   const origin = `${external.scheme}://${external.authority}`;
+  const src = external.toString(true).replace(/\/?$/, '/') + projectQuery();
+  const title = workspaceRoot() ? `AI Monitor · ${path.basename(workspaceRoot())}` : 'AI Dev Monitor';
 
-  panel = vscode.window.createWebviewPanel('aiDevMonitor', 'AI Dev Monitor', vscode.ViewColumn.Beside, {
+  panel = vscode.window.createWebviewPanel('aiDevMonitor', title, { viewColumn: vscode.ViewColumn.Beside, preserveFocus }, {
     enableScripts: true,
     retainContextWhenHidden: true,
   });
@@ -143,7 +165,7 @@ async function openPanel() {
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src 'unsafe-inline';">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#06080c}iframe{border:0;width:100%;height:100%;display:block}</style>
-</head><body><iframe src="${external.toString(true)}" title="AI Dev Monitor"></iframe></body></html>`;
+</head><body><iframe src="${src.replace(/"/g, '&quot;')}" title="AI Dev Monitor"></iframe></body></html>`;
   panel.onDidDispose(() => { panel = null; });
 }
 
@@ -159,17 +181,16 @@ async function activate(context) {
   context.subscriptions.push(
     output,
     statusItem,
-    vscode.commands.registerCommand('aiDevMonitor.open', openPanel),
+    vscode.commands.registerCommand('aiDevMonitor.open', () => openPanel()),
     vscode.commands.registerCommand('aiDevMonitor.showWorkspace', async () => {
       const root = workspaceRoot();
       if (!root) { vscode.window.showWarningMessage('Open a folder first.'); return; }
       await ensureServer();
-      await request('POST', '/api/project', { root });
-      openPanel();
+      openPanel(); // the panel is already pinned to this window's workspace
     }),
     vscode.commands.registerCommand('aiDevMonitor.openInBrowser', async () => {
       await ensureServer();
-      vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${port()}/`)));
+      vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${port()}/${projectQuery()}`)));
     }),
   );
 
