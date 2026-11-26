@@ -51,6 +51,8 @@ export function normalizeHook(p) {
   const base = {
     session: p.session_id || 'unknown', cwd: p.cwd || null, tool: tool || null,
     agent: p.agent_id || null, agentType: p.agent_type || null,
+    // used to bind a subagent to the Task/Agent call that launched it (see Project.trackAgent)
+    toolUseId: p.tool_use_id || null, transcript: p.transcript_path || null,
   };
   if (tool === 'SubagentHandback') return null; // internal hand-off, SubagentStop covers it
 

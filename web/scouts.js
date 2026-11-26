@@ -9,17 +9,23 @@ export class ScoutManager {
    * @param theme  needs root, agentPosition(), positionOf(fileId)
    * @param opts   make(color) -> {obj, trail, dispose()}, move(scout, goal, dt), lift (height above a file)
    */
-  constructor(theme, { make, move, lift = 3 }) {
+  constructor(theme, { make, move, lift = 3, place = null, tagHeight = 1.5 }) {
+    this.tagHeight = tagHeight;
     this.theme = theme;
     this.make = make;
     this.move = move;
     this.lift = lift;
+    // place(goal, filePos, scout, index, t): where a scout stands next to a file. Themes with a
+    // wall (clockwork) or a floor (office) override the default "hover around it" placement.
+    this.place = place;
     this.map = new Map();
     this.dying = [];
     this.goal = new THREE.Vector3();
   }
 
   get size() { return this.map.size; }
+  /** Live tags of the running subagents (for label decluttering). */
+  get tags() { return [...this.map.values()].map((s) => s.tag); }
 
   ensure(key, info) {
     let s = this.map.get(key);
@@ -28,6 +34,7 @@ export class ScoutManager {
     const body = this.make(color);
     body.obj.position.copy(this.theme.agentPosition());
     const tag = makeLabel('', '#' + color.getHexString(), 'agent-tag');
+    tag.userData = { collapse: true, scout: true }; // crowded: shrinks to a coloured dot
     this.theme.root.add(body.obj, body.trail.line, tag);
     s = {
       key, ...body, tag, color, type: info.type || 'agent', label: info.label || '', last: info.last || 'Starting…',
@@ -76,6 +83,7 @@ export class ScoutManager {
     }
     if (!s) s = this.ensure(ev.agent, { type: ev.agentType, label: ev.agentLabel, color: ev.agentColor });
     s.type = ev.agentType || s.type;
+    s.label = ev.agentLabel || s.label; // corrected by the server once the exact launch is known
     s.last = ev.detail || s.last;
     if (ev.file && this.theme.positionOf(ev.file)) s.targetId = ev.file;
     this.setTag(s);
@@ -98,11 +106,12 @@ export class ScoutManager {
       const p = s.targetId && this.theme.positionOf(s.targetId);
       // Each scout keeps its own slot around a file, so two agents on the same file don't overlap.
       const a = s.phase + t * 0.25;
-      if (p) this.goal.set(p.x + Math.cos(a) * 2.4, p.y + this.lift + (i % 3) * 1.4, p.z + Math.sin(a) * 2.4);
+      if (p && this.place) this.place(this.goal, p, s, i, t);
+      else if (p) this.goal.set(p.x + Math.cos(a) * 2.4, p.y + this.lift + (i % 3) * 1.4, p.z + Math.sin(a) * 2.4);
       else this.goal.set(home.x + Math.cos(t * 0.6 + s.phase) * 6, home.y + 2, home.z + Math.sin(t * 0.6 + s.phase) * 6);
       this.move(s, this.goal, dt);
       s.trail.push(s.obj.position);
-      s.tag.position.copy(s.obj.position).setY(s.obj.position.y + 1.5);
+      s.tag.position.copy(s.obj.position).setY(s.obj.position.y + this.tagHeight);
       i++;
     }
     for (let i = this.dying.length - 1; i >= 0; i--) {

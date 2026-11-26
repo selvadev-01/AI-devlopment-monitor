@@ -10,7 +10,10 @@ test run and subagent shows up as an animation, in one of two themes:
 - **Neural**: files are neurons and imports are connections. An edit sends pulses to every file that depends on it, so you can see the impact of a change.
 - **Galaxy**: modules are star systems and files are planets. Claude is a ship that scans (Read), builds (Edit) and forms new planets (Write).
 
-Switch themes with the toggle in the top bar or press `T`. Press `F` to go back to the overview, and double-click a node to focus it.
+Switch themes with the toggle in the top bar or press `T`. Press `F` to go back to the overview.
+
+- **Find a file**: press `/` (or click the search box in the left panel) and type part of a name or path. `Enter` flies the camera to the file; `Ctrl+Enter` opens it in the editor.
+- **Open in the editor**: click a file in the 3D view to fly to it, double-click it to open it. Rows in the search results and the changed-files list have an `open` button. Inside the VS Code panel the file opens in the main editor; in a browser it opens through a `vscode://file/…` link.
 
 ## Textures
 
@@ -46,6 +49,12 @@ npm start            # opens the monitor on http://localhost:7777
 npm run demo         # in a second terminal: plays a scripted session, no Claude needed
 ```
 
+Demo options (after `npm run demo --`): `--loop` repeats it, `--project D:/my-app` plays it on a real project's files (read-only), and `--swarm 10` launches ten subagents that work in parallel.
+
+Each subagent is matched to the exact Task/Agent call that launched it: Claude Code writes `<session>/subagents/agent-<id>.meta.json` next to the session transcript with that call's `tool_use_id`, and the monitor reads it when the subagent's first tool call arrives. If the file is not there yet, it guesses from the oldest launch of the same type and corrects the task label as soon as the file appears.
+
+With many subagents at once, every agent gets its own colour (ten colours), crowded tags shrink to coloured dots, the overview pulls back so every ship stays in frame, the activity feed groups their parallel actions ("READ · 10 agents"), and the Subagents panel switches to one line per agent.
+
 ## Connect Claude Code
 
 The monitor gets its events from Claude Code hooks. To install them:
@@ -58,8 +67,19 @@ npm run hooks:uninstall                          # remove them again
 
 The installer writes a `.bak` backup before it changes the settings file. Start a new Claude Code session after installing.
 
-Keep `npm start` running. The monitor follows whichever project Claude is working in.
-Each hook is a small Node script, [hooks/send-event.js](hooks/send-event.js). It has a timeout of under a second, always exits 0 and prints nothing, so Claude is never slowed down or blocked, even when the monitor is off.
+Keep `npm start` running (or use the VS Code extension, which runs the server for you). The monitor follows whichever project Claude is working in.
+
+The installed hooks are Claude Code **`http` hooks**: Claude POSTs each event straight to `http://127.0.0.1:7777/event`, and no process is started per tool call. On a Windows laptop, starting a hook process took about 0.6 s, twice per tool call, so this keeps Claude fast. The server answers `204` with an empty body, so Claude has no hook output to act on. To use the older node script instead, run `node scripts/install-hooks.js --command`; it is installed as an `async` hook, so it never blocks Claude.
+
+## Performance
+
+| Setting `aiDevMonitor.quality` (or `?quality=` in the browser) | What it turns on |
+|---|---|
+| `low` | pixel ratio 1, no MSAA, 30 fps (10 when idle) |
+| `balanced` (default) | MSAA, 60 fps (20 when idle) |
+| `high` | full pixel ratio, 60 fps (30 when idle) |
+
+Rendering drops to the idle frame rate after 6 s without events or input, and stops completely while the panel or tab is hidden. The server itself uses about 55 MB of RAM.
 
 ## VS Code extension
 

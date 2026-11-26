@@ -6,18 +6,96 @@ const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', '.next', '.nuxt',
   '.turbo', '.cache', 'coverage', '__pycache__', '.venv', 'venv', 'env', '.idea',
   '.vscode', 'target', 'bin', 'obj', '.gradle', 'vendor', '.claude', 'concept', 'data',
+  // generated / asset folders that only add noise in big repos
+  '.angular', '.nx', '.svelte-kit', '.output', '.vercel', '.expo', 'storybook-static',
+  'generated', '__generated__', 'assets', 'public', 'tmp', 'temp', '.terraform',
+  'hls', 'media', 'videos', 'renders', '.venv-tts',
 ]);
 
+// Source code only: templates, styles, JSON, docs and config would double or triple the node count
+// of a large project (an Angular component is .ts + .html + .scss + .spec.ts) without adding meaning.
 const CODE_EXT = new Set([
   '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.vue', '.svelte', '.py', '.go', '.rs',
   '.java', '.kt', '.cs', '.php', '.rb', '.swift', '.dart', '.c', '.h', '.cpp', '.hpp',
-  '.css', '.scss', '.html', '.json', '.md', '.sql', '.yml', '.yaml', '.toml', '.sh', '.ps1',
 ]);
 
 const RESOLVE_EXT = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte', '.py',
   '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/__init__.py'];
 
-const MAX_FILES = 1500;
+const MAX_FILES = 6000;
+const MAX_MODULE = 80; // a folder with more files than this is split into its sub-folders
+const MIN_MODULE = 4;  // sub-folders smaller than this stay with their parent
+const WRAPPERS = new Set(['src', 'app', 'apps', 'lib', 'libs', 'packages', 'modules', 'module', 'features',
+  'feature', 'source', 'sources', 'main', 'pkg', 'internal', 'cmd', 'core', 'java', 'kotlin', 'python']);
+
+/**
+ * Group files into modules of a readable size. Big folders are split by sub-folder until each
+ * module has at most MAX_MODULE files; wrapper folders (src, app, modules…) are skipped in names,
+ * so "vruksha-frontend/src/app/modules/sales/x.ts" lands in "vruksha-frontend/sales".
+ * @returns {{ moduleOfId: Map<string,string>, prefixes: Map<string,string> }} prefixes: module -> folder path
+ */
+export function assignModules(ids) {
+  const moduleOfId = new Map();
+  const prefixes = new Map();
+  const put = (list, label, prefix) => {
+    for (const id of list) moduleOfId.set(id, label);
+    if (!prefixes.has(label)) prefixes.set(label, prefix);
+  };
+  // Returns the biggest module created for this subtree as { label, prefix, size }.
+  const split = (list, depth, label, prefix) => {
+    if (label && list.length <= MAX_MODULE) { put(list, label, prefix); return { label, prefix, size: list.length }; }
+    const groups = new Map(); const here = [];
+    for (const id of list) {
+      const parts = id.split('/');
+      if (parts.length - 1 > depth) {
+        if (!groups.has(parts[depth])) groups.set(parts[depth], []);
+        groups.get(parts[depth]).push(id);
+      } else here.push(id);
+    }
+    let biggest = null;
+    for (const [seg, sub] of groups) {
+      if (label && sub.length < MIN_MODULE) { here.push(...sub); continue; }
+      const subLabel = isWrapper(seg) ? label : (label ? `${label}/${seg}` : seg);
+      const b = split(sub, depth + 1, subLabel, `${prefix}${seg}/`);
+      if (!biggest || b.size > biggest.size) biggest = b;
+    }
+    if (!here.length) return biggest;
+    // A few loose files next to big sub-folders join the biggest one instead of forming a tiny module.
+    if (biggest && label && here.length < MIN_MODULE) {
+      for (const id of here) moduleOfId.set(id, biggest.label);
+      biggest.size += here.length;
+      return biggest;
+    }
+    put(here, label || 'root', prefix);
+    return !biggest || here.length > biggest.size ? { label: label || 'root', prefix, size: here.length } : biggest;
+  };
+  split(ids, 0, '', '');
+  return { moduleOfId, prefixes };
+}
+
+/** Binary check on the first 2 KB: NUL bytes, or MPEG-TS sync bytes (0x47 every 188 bytes). */
+function isBinary(abs) {
+  const fd = fs.openSync(abs, 'r');
+  try {
+    const buf = Buffer.alloc(2048);
+    const n = fs.readSync(fd, buf, 0, 2048, 0);
+    if (n >= 377 && buf[0] === 0x47 && buf[188] === 0x47 && buf[376] === 0x47) return true;
+    for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+    return false;
+  } finally { fs.closeSync(fd); }
+}
+
+/** Folders that only organise code: src/app/modules…, Next.js route groups "(auth)" and params "[id]". */
+const isWrapper = (seg) => WRAPPERS.has(seg.toLowerCase()) || /^\(.*\)$|^\[.*\]$/.test(seg);
+
+/** Module for a file that appeared after the scan: the module with the longest matching folder. */
+export function moduleFor(rel, modulePrefixes) {
+  let best = null; let len = -1;
+  for (const [label, prefix] of Object.entries(modulePrefixes || {})) {
+    if (prefix && rel.startsWith(prefix) && prefix.length > len) { best = label; len = prefix.length; }
+  }
+  return best || moduleOf(rel);
+}
 const MAX_BYTES = 512 * 1024;
 
 export function toRel(root, file) {
@@ -102,21 +180,30 @@ function resolveSpec(fromRel, { spec, py }, fileSet) {
 
 export function scanProject(root) {
   const absFiles = walk(root);
-  const rels = absFiles.map((f) => toRel(root, f));
-  const fileSet = new Set(rels.filter(Boolean));
+  // Read every file first so binary files with a code extension (e.g. .ts video segments of an
+  // HLS stream) are dropped before modules are formed.
+  const texts = new Map(); const keep = [];
+  for (const abs of absFiles) {
+    const rel = toRel(root, abs);
+    if (!rel) continue;
+    let text = '';
+    try {
+      if (isBinary(abs)) continue;
+      if (fs.statSync(abs).size <= MAX_BYTES) text = fs.readFileSync(abs, 'utf8');
+    } catch { /* unreadable file: keep as node with no imports */ }
+    texts.set(rel, text);
+    keep.push([abs, rel]);
+  }
+  const fileSet = new Set(texts.keys());
+  const modules = assignModules([...fileSet]);
   const nodes = [];
   const edges = [];
   const edgeKeys = new Set();
 
-  absFiles.forEach((abs, i) => {
-    const rel = rels[i];
-    if (!rel) return;
-    let text = '';
-    try {
-      if (fs.statSync(abs).size <= MAX_BYTES) text = fs.readFileSync(abs, 'utf8');
-    } catch { /* unreadable file: keep as node with no imports */ }
+  keep.forEach(([, rel]) => {
+    const text = texts.get(rel);
     const loc = text ? text.split('\n').length : 1;
-    nodes.push({ id: rel, name: path.posix.basename(rel), module: moduleOf(rel), loc });
+    nodes.push({ id: rel, name: path.posix.basename(rel), module: modules.moduleOfId.get(rel) || moduleOf(rel), loc });
     const ext = path.extname(rel).toLowerCase();
     for (const imp of importsOf(text, ext)) {
       const target = resolveSpec(rel, imp, fileSet);
@@ -127,5 +214,8 @@ export function scanProject(root) {
     }
   });
 
-  return { root, name: path.basename(root), scannedAt: new Date().toISOString(), nodes, edges };
+  return {
+    root, name: path.basename(root), scannedAt: new Date().toISOString(), nodes, edges,
+    modulePrefixes: Object.fromEntries(modules.prefixes),
+  };
 }

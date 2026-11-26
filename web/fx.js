@@ -6,7 +6,8 @@ export const KIND_COLORS = {
   read: '#3fd4ff', search: '#8d9bff', edit: '#ffb547', create: '#3ddc84', bash: '#c38bff',
   ok: '#3ddc84', fail: '#ff5a5f', agent: '#ff5fd2', prompt: '#e4e8ef',
 };
-export const AGENT_COLORS = ['#ffb547', '#ff5fd2', '#3fd4ff', '#9be15d', '#a07bff'];
+// Ten clearly different hues, so ten parallel subagents never share a colour.
+export const AGENT_COLORS = ['#ffb547', '#ff5fd2', '#3fd4ff', '#9be15d', '#a07bff', '#ff6b5e', '#2ee6c5', '#f4e04d', '#5b8cff', '#ff9fd8'];
 
 export function hash(str) {
   let h = 2166136261;
@@ -156,4 +157,33 @@ export function disposeTree(obj) {
     const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
     for (const m of mats) { if (m.map && !isCached(m.map)) m.map.dispose(); m.dispose(); }
   });
+}
+
+const _v = new THREE.Vector3();
+/**
+ * Keep labels from overlapping on screen. Labels earlier in the list win, so callers put the
+ * important ones first. A label that loses is hidden, or, if it has userData.collapse (subagent
+ * tags), shrinks to a coloured dot instead so the agent stays visible.
+ */
+export function declutterLabels(labels, camera, width, height) {
+  const boxes = [];
+  const hits = (x, y, w, h) => boxes.some((b) => Math.abs(b.x - x) < b.w + w && Math.abs(b.y - y) < b.h + h);
+  for (const l of labels) {
+    if (!l.visible) continue;
+    const collapse = l.userData?.collapse;
+    if (collapse) l.element.classList.remove('mini');
+    l.getWorldPosition(_v).project(camera);
+    if (_v.z > 1) continue;
+    const x = (_v.x * 0.5 + 0.5) * width; const y = (-_v.y * 0.5 + 0.5) * height;
+    const w = (l.element.textContent.length * (collapse ? 7 : 8.6) + 20) / 2; const h = 12;
+    if (hits(x, y, w, h)) {
+      if (!collapse) { l.visible = false; continue; }
+      // still crowded as a dot (it would sit on another label): hide the tag, the ship stays visible
+      if (hits(x, y, 6, 6)) { l.visible = false; continue; }
+      l.element.classList.add('mini');
+      boxes.push({ x, y, w: 6, h: 6 });
+      continue;
+    }
+    boxes.push({ x, y, w, h });
+  }
 }

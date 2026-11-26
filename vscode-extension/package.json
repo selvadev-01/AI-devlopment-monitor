@@ -24,6 +24,17 @@
           "default": 7777,
           "description": "Port of the local monitor server. The Claude Code hooks send events to this port."
         },
+        "aiDevMonitor.quality": {
+          "type": "string",
+          "enum": ["low", "balanced", "high"],
+          "default": "balanced",
+          "enumDescriptions": [
+            "Lightest: no anti-aliasing, 30 fps (10 when idle). Best for older laptops or battery.",
+            "Anti-aliasing, 60 fps (20 when idle).",
+            "Full resolution on high-DPI screens. Needs a good GPU."
+          ],
+          "description": "Render quality of the 3D view. Reopen the panel after changing it."
+        },
         "aiDevMonitor.autoOpen": {
           "type": "boolean",
           "default": true,

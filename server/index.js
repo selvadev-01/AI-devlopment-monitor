@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { scanProject, toRel, moduleOf } from './scanner.js';
+import { scanProject, toRel, moduleFor } from './scanner.js';
 import { normalizeHook } from './normalize.js';
 import { listSessions, sessionEvents, maxEventId } from './history.js';
 
@@ -48,7 +48,7 @@ class Project {
     this.lastTest = null;
     this.agents = new Map();      // subagent id -> { id, type, label, color, startId, tools }
     this.pendingAgents = [];      // launched (Agent tool) but no tool call seen yet, so no id yet
-    this.nextAgentColor = 0;
+    this.launches = new Map();    // toolUseId (or start:<event id>) -> launch, kept so a guessed binding can be corrected
     this.lastActive = Date.now();
     this.watcher = null;
     this.rescanTimer = null;
@@ -90,25 +90,71 @@ class Project {
    * in pendingAgents; the subagent's first tool call claims it (same type first, else oldest) and
    * carries agentStartId so viewers can link the launch to the running agent.
    */
+  /** Lowest colour slot no running subagent uses, so parallel agents never share a colour (up to the palette size). */
+  freeAgentColor() {
+    const used = new Set([...this.agents.values(), ...this.pendingAgents].map((a) => a.color));
+    let i = 0;
+    while (used.has(i)) i++;
+    return i;
+  }
+
+  /**
+   * Which launch a subagent belongs to. Claude Code writes <session>/subagents/agent-<id>.meta.json
+   * next to the session transcript, with the toolUseId of the Task/Agent call that started it and
+   * its description. That is exact even when several agents of one type start together; without
+   * the file we fall back to the oldest pending launch of the same type.
+   */
+  agentMeta(ev) {
+    if (!ev.transcript || !ev.agent || !/^[\w-]+$/.test(ev.agent)) return null;
+    const dir = path.basename(ev.transcript).startsWith('agent-')
+      ? path.dirname(ev.transcript)                                   // already a subagent transcript
+      : path.join(path.dirname(ev.transcript), ev.session, 'subagents');
+    try { return JSON.parse(fs.readFileSync(path.join(dir, `agent-${ev.agent}.meta.json`), 'utf8')); } catch { return null; }
+  }
+
+  /** Launch (pending or already bound) for a subagent's meta file. */
+  launchFor(meta) {
+    if (!meta) return null;
+    return (meta.toolUseId && this.launches.get(meta.toolUseId))
+      || [...this.launches.values()].find((l) => l.label === meta.description) || null;
+  }
+
   trackAgent(event, ev) {
     if (event.kind === 'agent_start') {
-      const pend = { startId: event.id, type: ev.launchType, label: ev.detail, color: this.nextAgentColor++ % 5 };
+      const pend = { startId: event.id, type: ev.launchType, label: ev.detail, color: this.freeAgentColor(), toolUseId: ev.toolUseId };
       this.pendingAgents.push(pend);
+      this.launches.set(ev.toolUseId || `start:${event.id}`, pend);
+      if (this.launches.size > 200) this.launches.delete(this.launches.keys().next().value);
       Object.assign(event, { agent: null, agentParent: ev.agent, agentType: pend.type, agentLabel: pend.label, agentColor: pend.color });
       return;
     }
     if (!ev.agent) return;
     let a = this.agents.get(ev.agent);
     if (!a) {
-      let i = this.pendingAgents.findIndex((x) => x.type === ev.agentType);
+      const exact = this.launchFor(this.agentMeta(ev));
+      let i = exact ? this.pendingAgents.indexOf(exact) : -1;
+      if (i < 0) i = this.pendingAgents.findIndex((x) => x.type === ev.agentType);
       if (i < 0 && this.pendingAgents.length) i = 0;
       const pend = i >= 0 ? this.pendingAgents.splice(i, 1)[0] : null;
       a = {
         id: ev.agent, type: ev.agentType || pend?.type || 'agent', label: pend?.label || ev.agentType || 'Subagent',
-        color: pend ? pend.color : this.nextAgentColor++ % 5, startId: pend?.startId ?? null, tools: 0,
+        color: pend ? pend.color : this.freeAgentColor(), startId: pend?.startId ?? null, tools: 0,
+        launch: pend, guessed: !exact, tries: 0,
       };
       this.agents.set(a.id, a);
       event.agentStartId = a.startId;
+    } else if (a.guessed && a.tries++ < 20) {
+      // The meta file may appear a moment after the first tool call: correct a guessed label.
+      const right = this.launchFor(this.agentMeta(ev));
+      if (right) {
+        a.guessed = false;
+        if (right !== a.launch) {
+          const other = [...this.agents.values()].find((b) => b !== a && b.launch === right);
+          if (other) { other.launch = a.launch; other.label = a.launch?.label || other.type; other.guessed = true; }
+          else this.pendingAgents = this.pendingAgents.filter((x) => x !== right).concat(a.launch ? [a.launch] : []);
+          a.launch = right; a.label = right.label;
+        }
+      }
     }
     if (event.kind !== 'agent_stop') a.tools++;
     Object.assign(event, { agent: a.id, agentType: a.type, agentLabel: a.label, agentColor: a.color, agentTools: a.tools });
@@ -218,7 +264,7 @@ function ingest(payload) {
   if (rel && event.kind === 'create') {
     p.created.add(rel);
     if (!p.graph.nodes.some((n) => n.id === rel)) {
-      const node = { id: rel, name: path.posix.basename(rel), module: moduleOf(rel), loc: event.stats?.added || 1 };
+      const node = { id: rel, name: path.posix.basename(rel), module: moduleFor(rel, p.graph.modulePrefixes), loc: event.stats?.added || 1 };
       p.graph.nodes.push(node);
       event.node = node;
     }
@@ -238,6 +284,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2',
+  '.glb': 'model/gltf-binary', '.hdr': 'application/octet-stream',
 };
 
 function serveFile(res, baseDir, relPath) {
@@ -271,8 +318,10 @@ const handler = async (req, res) => {
   const url = new URL(req.url, `http://${HOST}`);
   try {
     if (req.method === 'POST' && url.pathname === '/event') {
-      const ev = ingest(JSON.parse(await readBody(req)));
-      return json(res, 200, { ok: true, id: ev?.id ?? null });
+      ingest(JSON.parse(await readBody(req)));
+      // Empty 2xx: Claude Code's http hooks parse a JSON body as hook output, so send none.
+      res.writeHead(204).end();
+      return;
     }
     if (req.method === 'POST' && url.pathname === '/api/project') {
       const { root } = JSON.parse(await readBody(req));

@@ -72,12 +72,40 @@ function ensureDemoProject() {
   fs.rmSync(path.join(ROOT, NEW_FILE), { force: true });
 }
 
-const abs = (f) => path.join(ROOT, f);
+// --project DIR: play the same session on a real project's files (read-only: nothing is written).
+const PI = process.argv.indexOf('--project');
+const PROJ = PI > -1 ? path.resolve(process.argv[PI + 1]) : null;
+const MAP = new Map();
+const POOL = []; // files the swarm demo spreads its subagents over (one busy file per module)
+if (PROJ) {
+  const { scanProject } = await import('../server/scanner.js');
+  const g = scanProject(PROJ);
+  const deps = new Map();
+  for (const e of g.edges) deps.set(e.target, (deps.get(e.target) || 0) + 1);
+  const isTest = (id) => /\.(spec|test)\.[jt]sx?$/.test(id);
+  // Busy files (most dependents) from different modules make the edit pulses visible.
+  const seen = new Set(); const busy = [];
+  for (const n of [...g.nodes].sort((a, b) => (deps.get(b.id) || 0) - (deps.get(a.id) || 0))) {
+    if (isTest(n.id) || seen.has(n.module)) continue;
+    seen.add(n.module); busy.push(n.id);
+  }
+  const tests = g.nodes.filter((n) => isTest(n.id)).map((n) => n.id);
+  const names = ['src/payments/stripe.ts', 'src/services/orderService.ts', 'src/api/orders.ts', 'src/auth/auth.ts',
+    'src/auth/jwt.ts', 'src/api/router.ts', 'src/api/users.ts', 'src/db/orderRepo.ts'];
+  names.forEach((n, i) => MAP.set(n, busy[i % busy.length]));
+  POOL.push(...busy);
+  MAP.set('tests/auth.spec.ts', tests[0] || busy[8] || busy[0]);
+  MAP.set('tests/orders.spec.ts', tests[1] || busy[9] || busy[0]);
+  MAP.set('src/payments/refund.ts', path.posix.join(path.posix.dirname(MAP.get('src/payments/stripe.ts')), 'refund-demo.ts'));
+  console.log(`demo on ${PROJ}: ${g.nodes.length} files, playing on`, [...MAP.values()].slice(0, 4).join(', '), '…');
+}
+const ROOT_DIR = PROJ || ROOT;
+const abs = (f) => path.join(ROOT_DIR, MAP.get(f) || f);
 const nLines = (n) => Array.from({ length: n }, (_, i) => `line ${i}`).join('\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms / SPEED));
 
 async function send(payload) {
-  const full = { session_id: 'demo-session', cwd: ROOT, transcript_path: '', ...payload };
+  const full = { session_id: 'demo-session', cwd: ROOT_DIR, transcript_path: '', ...payload };
   try {
     await fetch(`http://127.0.0.1:${PORT}/event`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full),
@@ -100,7 +128,7 @@ const DOCS = { agent_id: 'demo-docs', agent_type: 'general-purpose' };
 const EDGE = { agent_id: 'demo-edge', agent_type: 'Explore' };
 
 async function session() {
-  ensureDemoProject();
+  if (!PROJ) ensureDemoProject(); // never create or delete files in a real project
   await send({ hook_event_name: 'SessionStart', source: 'startup' });
   await sleep(2500);
   await send({ hook_event_name: 'UserPromptSubmit', prompt: 'Add refund support to payments and fix the failing auth test' });
@@ -119,14 +147,14 @@ async function session() {
   await edit('src/payments/stripe.ts', 14, 3); await sleep(2400);
   const content = body(NEW_FILE, ['src/payments/stripe.ts', 'src/db/orderRepo.ts'], 9);
   await pre('Write', { file_path: abs(NEW_FILE), content });
-  fs.writeFileSync(abs(NEW_FILE), content);
+  if (!PROJ) fs.writeFileSync(abs(NEW_FILE), content);
   await sleep(2800);
   await edit('src/services/orderService.ts', 9, 2); await sleep(2000);
   await edit('src/api/orders.ts', 22, 4); await sleep(2000);
 
   const test = { command: 'npm test', description: 'Run tests' };
   await pre('Bash', test); await sleep(2600);
-  await post('Bash', test, { stdout: 'PASS tests/users.spec.ts\nPASS tests/orders.spec.ts\nFAIL tests/auth.spec.ts\n\nTests:       1 failed, 24 passed, 25 total', stderr: '', interrupted: false });
+  await post('Bash', test, { stdout: `PASS tests/users.spec.ts\nPASS tests/orders.spec.ts\nFAIL ${MAP.get('tests/auth.spec.ts') || 'tests/auth.spec.ts'}\n\nTests:       1 failed, 24 passed, 25 total`, stderr: '', interrupted: false });
   await sleep(2600);
 
   await read('src/auth/jwt.ts'); await sleep(1500);
@@ -161,9 +189,67 @@ async function session() {
   await send({ hook_event_name: 'Stop' });
 }
 
+// --swarm N: N subagents launched together and working in parallel (default 10). Four of them
+// share one module on purpose, so crowding (tags, colours) shows up.
+const SI = process.argv.indexOf('--swarm');
+const SWARM = SI > -1 ? Math.max(1, Number(process.argv[SI + 1]) || 10) : 0;
+
+async function swarm(n) {
+  if (!PROJ) ensureDemoProject();
+  const files = POOL.length ? POOL : Object.keys(FILES).map((f) => abs(f));
+  const absOf = (f) => (path.isAbsolute(f) ? f : path.join(ROOT_DIR, f));
+  const TYPES = ['Explore', 'Explore', 'code-reviewer', 'general-purpose', 'Explore', 'test-runner',
+    'code-reviewer', 'general-purpose', 'Explore', 'docs-writer', 'security-reviewer', 'Explore'];
+  const TASKS = ['Map the auth flow', 'Find refund callers', 'Review billing changes', 'Update API docs',
+    'Check edge cases', 'Run the failing tests', 'Review the repositories', 'Write migration notes',
+    'Trace the job queue', 'Document the webhooks', 'Audit input validation', 'Find dead code'];
+  await send({ hook_event_name: 'SessionStart', source: 'startup' });
+  await sleep(2000);
+  await send({ hook_event_name: 'UserPromptSubmit', prompt: `Split the refund work across ${n} subagents` });
+  await sleep(1200);
+  const agents = Array.from({ length: n }, (_, i) => ({
+    agent_id: `swarm-${i}`, agent_type: TYPES[i % TYPES.length], task: TASKS[i % TASKS.length],
+    // agents 0-3 crowd into the same module; the rest spread out
+    files: i < 4 ? [files[0], files[0], files[1 % files.length]] : [files[(i * 3) % files.length], files[(i * 3 + 1) % files.length], files[(i * 3 + 2) % files.length]],
+  }));
+  // Like Claude Code: each launch has a tool_use_id, and each subagent gets a meta file
+  // (<session>/subagents/agent-<id>.meta.json) naming that tool_use_id. The files live in
+  // data/demo-transcripts, never in the project. Odd agents get theirs late, to exercise the
+  // server's correction of a guessed binding.
+  const tdir = path.resolve(HERE, '..', 'data', 'demo-transcripts');
+  const transcript = path.join(tdir, 'demo-session.jsonl');
+  const metaDir = path.join(tdir, 'demo-session', 'subagents');
+  fs.rmSync(metaDir, { recursive: true, force: true });
+  fs.mkdirSync(metaDir, { recursive: true });
+  const writeMeta = (a, i) => fs.writeFileSync(path.join(metaDir, `agent-${a.agent_id}.meta.json`),
+    JSON.stringify({ agentType: a.agent_type, description: a.task, toolUseId: `toolu_swarm_${i}` }));
+  for (const [i, a] of agents.entries()) {
+    await send({ hook_event_name: 'PreToolUse', tool_name: 'Task', tool_use_id: `toolu_swarm_${i}`, transcript_path: transcript,
+      tool_input: { description: a.task, subagent_type: a.agent_type } });
+    if (i % 2 === 0) writeMeta(a, i);
+    await sleep(250);
+  }
+  for (let step = 0; step < 6; step++) {
+    if (step === 1) agents.forEach((a, i) => { if (i % 2) writeMeta(a, i); });
+    // the first tool calls arrive in reverse launch order, so "oldest launch of that type" would be wrong
+    for (const a of step === 0 ? agents.slice().reverse() : agents) {
+      const agent = { agent_id: a.agent_id, agent_type: a.agent_type, transcript_path: transcript };
+      const f = absOf(a.files[step % a.files.length]);
+      if (step === 4 && a.agent_type !== 'Explore') await pre('Edit', { file_path: f, old_string: nLines(2), new_string: nLines(6) }, agent);
+      else if (step === 2) await pre('Grep', { pattern: 'refund', path: ROOT_DIR }, agent);
+      else await pre('Read', { file_path: f }, agent);
+      await sleep(260);
+    }
+    await sleep(900);
+  }
+  for (const a of agents) { await stopAgent({ agent_id: a.agent_id, agent_type: a.agent_type }); await sleep(700); }
+  await sleep(1500);
+  await send({ hook_event_name: 'Stop' });
+}
+
 do {
-  console.log('▶ demo session');
-  await session();
+  console.log(SWARM ? `▶ swarm demo: ${SWARM} subagents` : '▶ demo session');
+  if (SWARM) await swarm(SWARM); else await session();
   if (LOOP) await sleep(5000);
 } while (LOOP);
 console.log('✓ demo finished');

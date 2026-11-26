@@ -5,7 +5,6 @@ node_modules/three/build/three.module.min.js
 node_modules/three/build/three.webgpu*
 node_modules/three/examples/fonts/**
 node_modules/three/examples/jsm/libs/**
-node_modules/three/examples/jsm/loaders/**
 node_modules/three/examples/jsm/nodes/**
 node_modules/three/examples/jsm/webxr/**
 node_modules/three/examples/jsm/physics/**

@@ -1,9 +1,10 @@
 // Neural theme: files are neurons, imports are axons. Edits send pulses to dependents.
 import * as THREE from 'three';
 import {
-  Animator, KIND_COLORS, ease, glowSprite, dotTexture, ringTexture, starfield, makeLabel, hash, rng, disposeTree, loadTex, skySphere,
+  Animator, KIND_COLORS, ease, glowSprite, dotTexture, ringTexture, starfield, makeLabel, hash, rng, disposeTree, loadTex, skySphere, declutterLabels,
 } from '../fx.js';
 import { ScoutManager } from '../scouts.js';
+import { displayName } from '../model.js';
 
 const TEST_MODULES = ['tests', 'test', '__tests__', 'spec', 'specs', 'e2e'];
 const HALO = 3.6; // halo sprite size relative to the neuron core
@@ -35,11 +36,12 @@ export class NeuralTheme {
   // ------------------------------------------------------------------ build
   build(model) {
     this.model = model;
-    const n = Math.max(1, model.nodes.size);
-    this.radius = 22 + Math.sqrt(n) * 5;
-    this.home.position.set(0, this.radius * 0.35, this.radius * 2.6);
+    const positions = layout(model);
+    this.radius = Math.max(30, layout.extent * 0.85); // camera distance, labels and effects follow the real size
+    this.home.position.set(0, this.radius * 1.7, this.radius * 1.6); // high angle: regions read like a map
 
-    this.root.add(skySphere('sky_neural', Math.min(5200, this.radius * 14), 0x7d8aa0));
+    this.sky = skySphere('sky_neural', 5200, 0x1a1e26); // dim: big bokeh blobs must not compete with the nodes; follows the camera
+    this.root.add(this.sky);
     this.stars = starfield(1200, this.radius * 9, 0.5);
     this.root.add(this.stars);
     this.dust = this.makeDust(700, this.radius * 1.5);
@@ -47,7 +49,6 @@ export class NeuralTheme {
 
     this.nodeGroup = new THREE.Group();
     this.root.add(this.nodeGroup);
-    const positions = layout(model, this.radius);
     for (const node of model.nodes.values()) this.addRecord(node, positions.get(node.id));
     this.buildEdges();
     this.buildDendrites();
@@ -88,7 +89,7 @@ export class NeuralTheme {
     halo.userData.id = node.id;
     group.add(core, halo);
     this.nodeGroup.add(group);
-    const rec = { id: node.id, group, core, halo, base: color, size, boost: 0, boostColor: COL.white.clone(), decay: 1, scale: 1, phase: hash(node.id) * Math.PI * 2 };
+    const rec = { id: node.id, module: node.module, group, core, halo, base: color, size, boost: 0, fk: 1, boostColor: COL.white.clone(), decay: 1, scale: 1, phase: hash(node.id) * Math.PI * 2 };
     this.records.set(node.id, rec);
     return rec;
   }
@@ -115,8 +116,9 @@ export class NeuralTheme {
       for (let s = 0; s < SEG; s++) {
         const o = (i * SEG + s) * 6;
         pos.set([pts[s].x, pts[s].y, pts[s].z, pts[s + 1].x, pts[s + 1].y, pts[s + 1].z], o);
-        c0.copy(a.base).lerp(b.base, s / SEG).multiplyScalar(0.32);
-        c1.copy(a.base).lerp(b.base, (s + 1) / SEG).multiplyScalar(0.32);
+        const dim = a.module === b.module ? (this.model.large ? 0.16 : 0.32) : 0.06; // cross-module links stay faint
+        c0.copy(a.base).lerp(b.base, s / SEG).multiplyScalar(dim);
+        c1.copy(a.base).lerp(b.base, (s + 1) / SEG).multiplyScalar(dim);
         col.set([c0.r, c0.g, c0.b, c1.r, c1.g, c1.b], o);
       }
     });
@@ -156,7 +158,7 @@ export class NeuralTheme {
         const p1 = rec.group.position.clone().addScaledVector(dir, len);
         const p2 = p1.clone().add(new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(len * 0.5));
         pos.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-        const c = rec.base.clone().multiplyScalar(0.45);
+        const c = rec.base.clone().multiplyScalar(this.model.large ? 0.22 : 0.45);
         for (let k = 0; k < 4; k++) { const f = k < 2 ? 1 : 0.45; col.push(c.r * f, c.g * f, c.b * f); }
       }
     }
@@ -180,11 +182,47 @@ export class NeuralTheme {
       if (!k) continue;
       c.divideScalar(k);
       this.centers.set(name, c);
-      const label = makeLabel(name, mod.color);
+      const label = makeLabel(displayName(name), mod.color);
       label.position.set(c.x, top + 4, c.z);
+      label.userData = { module: name };
       this.root.add(label);
       this.labels.push(label);
     }
+    // Big projects: one label per top folder for the far view; module labels appear when zoomed in.
+    const tops = new Map();
+    for (const [name, c] of this.centers) {
+      const t = name.split('/')[0];
+      if (!tops.has(t)) tops.set(t, { sum: new THREE.Vector3(), n: 0, color: this.model.modules.get(name).color });
+      tops.get(t).sum.add(c); tops.get(t).n++;
+    }
+    this.grouped = tops.size < this.centers.size;
+    if (this.grouped) {
+      for (const [t, v] of tops) {
+        const label = makeLabel(t, v.color, 'module-label top');
+        label.position.copy(v.sum.divideScalar(v.n)).setY(26);
+        label.userData = { top: true };
+        this.root.add(label);
+        this.labels.push(label);
+      }
+    }
+  }
+
+  /** Label level of detail: far = top folders only; near = module labels; active modules always. */
+  updateLabels() {
+    const active = this.focusSet || new Set();
+    if (this.grouped) {
+      const cam = this.engine.camera.position;
+      const far = cam.distanceTo(this.engine.controls.target) > this.radius * 1.3;
+      for (const l of this.labels) {
+        if (l.userData.top) l.visible = far;
+        else l.visible = !far && (active.has(l.userData.module) || cam.distanceTo(l.position) < this.radius * 0.9);
+      }
+    }
+    else for (const l of this.labels) l.visible = true; // small project: every label, minus overlaps
+    for (const tag of this.scouts.tags) tag.visible = true;
+    // subagent tags win over folder/module labels (and collapse to dots when they crowd each other)
+    const rank = (l) => (l.userData.scout ? 3 : l.userData.top ? 2 : active.has(l.userData.module) ? 1 : 0);
+    declutterLabels([...this.labels, ...this.scouts.tags].sort((a, b) => rank(b) - rank(a)), this.engine.camera, this.engine.container.clientWidth, this.engine.container.clientHeight);
   }
 
   buildAgent() {
@@ -402,8 +440,14 @@ export class NeuralTheme {
     const model = this.model;
     const hoverId = this.engine.hoverId;
     const cam = this.engine.camera.position;
+    // Focus mode (big projects): modules Claude is not working in fade back and shrink.
+    const large = model.large;
+    if (large && (!this.focusSet || (this.focusTick = (this.focusTick || 0) + dt) > 0.25)) { this.focusTick = 0; this.focusSet = model.focusModules(); }
     for (const rec of this.records.values()) {
       rec.boost = Math.max(0, rec.boost - dt / rec.decay);
+      const want = !large || this.focusSet.has(rec.module) || model.modified.has(rec.id) ? 1 : 0;
+      if (rec.fk !== want) rec.fk = want > rec.fk ? Math.min(1, rec.fk + dt * 1.5) : Math.max(0, rec.fk - dt * 0.8);
+      const fade = 0.22 + 0.78 * Math.max(rec.fk, rec.boost);
       const c = rec.core.material.color.copy(rec.base);
       let stateGlow = 0;
       if (model.failing.has(rec.id)) { c.lerp(COL.fail, 0.85); stateGlow = 0.35; }
@@ -411,12 +455,13 @@ export class NeuralTheme {
       else if (model.modified.has(rec.id)) { c.lerp(COL.edit, 0.5); stateGlow = 0.2; }
       if (hoverId === rec.id) c.lerp(COL.white, 0.4);
       c.lerp(rec.boostColor, rec.boost);
+      c.multiplyScalar(fade);
       rec.halo.material.color.copy(c);
       // Fade the halo when the camera is close so the membrane texture of the cell body shows.
       const dist = cam.distanceTo(rec.group.position);
       const near = Math.min(1, Math.max(0, (dist - rec.size * 6) / (rec.size * 28)));
-      rec.halo.material.opacity = (0.26 + stateGlow * 0.8 + rec.boost * 0.4 + 0.04 * Math.sin(t * 1.3 + rec.phase)) * (0.15 + 0.85 * near);
-      const s = Math.max(0.001, rec.size * rec.scale * (1 + rec.boost * 0.35));
+      rec.halo.material.opacity = (0.26 + stateGlow * 0.8 + rec.boost * 0.4 + 0.04 * Math.sin(t * 1.3 + rec.phase)) * (0.15 + 0.85 * near) * fade;
+      const s = Math.max(0.001, rec.size * rec.scale * (1 + rec.boost * 0.35) * (0.6 + 0.4 * fade));
       rec.core.scale.setScalar(s);
       rec.halo.scale.setScalar(s * HALO * (1 + rec.boost * 0.35));
     }
@@ -430,6 +475,8 @@ export class NeuralTheme {
 
     this.scouts.update(dt, t);
 
+    if ((this.labelTick = (this.labelTick || 0) + dt) > 0.25) { this.labelTick = 0; this.updateLabels(); }
+    this.sky.position.copy(this.engine.camera.position);
     this.dust.rotation.y += dt * 0.01;
     this.stars.rotation.y += dt * 0.002;
   }
@@ -500,32 +547,49 @@ export function makeTrail(n, color) {
 }
 
 /** Clustered force layout, deterministic per file id. */
-function layout(model, radius) {
+function layout(model) {
   const ids = [...model.nodes.keys()];
   const N = ids.length;
   const pos = new Map();
   const mods = [...model.modules.keys()];
   const centers = new Map();
-  const M = mods.length;
-  mods.forEach((m, i) => {
-    if (M === 1) { centers.set(m, new THREE.Vector3()); return; }
-    const y = 1 - (i / (M - 1)) * 2;
-    const r = Math.sqrt(1 - y * y);
-    const th = i * 2.399963;
-    centers.set(m, new THREE.Vector3(Math.cos(th) * r, y * 0.6, Math.sin(th) * r).multiplyScalar(radius));
-  });
+  // Two levels, packed by size so nothing overlaps: each top folder (frontend, backend…) is its
+  // own region with a clear gap around it, and each module is a separate ball inside its region.
+  const ballR = (files) => 4 + 3.2 * Math.cbrt(files);
+  const groups = new Map();
+  for (const m of mods) { const t = m.split('/')[0]; if (!groups.has(t)) groups.set(t, []); groups.get(t).push(m); }
+  const regions = [];
+  for (const [t, ms] of groups) {
+    const items = ms.map((m) => ({ key: m, r: ballR(model.modules.get(m).files.length) }));
+    const packed = shelfPack(items, 7);
+    regions.push({ key: t, r: Math.max(packed.halfW, packed.halfD) + 6, packed });
+  }
+  const top = shelfPack(regions.map((g) => ({ key: g.key, r: g.r, w: g.packed.halfW + 6, d: g.packed.halfD + 6 })), 26);
+  for (const g of regions) {
+    const c = top.pos.get(g.key);
+    for (const [m, p] of g.packed.pos) {
+      centers.set(m, new THREE.Vector3(c.x + p.x, (hash(m) - 0.5) * 14, c.y + p.y));
+    }
+  }
+  layout.extent = Math.max(top.halfW, top.halfD);
   for (const id of ids) {
     const n = model.nodes.get(id);
     const r = rng(hash(id) + 0.003);
-    const spread = 5 + Math.sqrt(model.modules.get(n.module).files.length) * 2.4;
-    pos.set(id, centers.get(n.module).clone().add(new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(spread * 2)));
+    const R = ballR(model.modules.get(n.module).files.length) * 0.8;
+    const v = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize().multiplyScalar(R * Math.cbrt(r()));
+    pos.set(id, centers.get(n.module).clone().add(v));
   }
   if (N < 2) return pos;
 
   const P = ids.map((id) => pos.get(id));
   const CEN = ids.map((id) => centers.get(model.nodes.get(id).module));
+  const RAD = ids.map((id) => ballR(model.modules.get(model.nodes.get(id).module).files.length));
   const idx = new Map(ids.map((id, i) => [id, i]));
-  const E = model.edges.map((e) => [idx.get(e.source), idx.get(e.target)]).filter(([a, b]) => a != null && b != null);
+  // [a, b, spring]: links inside a module pull hard, links across modules only gently, so shared
+  // utilities imported everywhere do not drag every cluster into one ball.
+  const E = model.edges.map((e) => [idx.get(e.source), idx.get(e.target),
+    model.nodes.get(e.source)?.module === model.nodes.get(e.target)?.module ? 0.035 : 0.003])
+    .filter(([a, b]) => a != null && b != null);
   const iters = Math.max(20, Math.min(160, Math.round(5e6 / (N * N))));
   const F = P.map(() => new THREE.Vector3());
   const d = new THREE.Vector3();
@@ -536,23 +600,52 @@ function layout(model, radius) {
       for (let j = i + 1; j < N; j++) {
         d.subVectors(P[i], P[j]);
         const dist2 = Math.max(d.lengthSq(), 0.5);
-        if (dist2 > 900) continue;
-        d.multiplyScalar(26 / dist2);
+        if (dist2 > 100) continue;
+        d.multiplyScalar(6 / dist2);
         F[i].add(d); F[j].sub(d);
       }
     }
-    for (const [a, b] of E) {
+    for (const [a, b, k] of E) {
       d.subVectors(P[b], P[a]);
       const dist = d.length() || 0.01;
-      d.multiplyScalar(((dist - 9) * 0.035) / dist);
+      d.multiplyScalar(((dist - 4) * k) / dist);
       F[a].add(d); F[b].sub(d);
     }
     for (let i = 0; i < N; i++) {
-      F[i].addScaledVector(d.subVectors(CEN[i], P[i]), 0.03);
+      // Pull back toward the module centre, hard once a node drifts past the ball's edge.
+      d.subVectors(CEN[i], P[i]);
+      F[i].addScaledVector(d, d.length() > RAD[i] ? 0.25 : 0.04);
       const len = F[i].length();
       if (len > 2.5) F[i].multiplyScalar(2.5 / len);
       P[i].addScaledVector(F[i], cool);
     }
   }
   return pos;
+}
+
+/**
+ * Pack circles (or w×d boxes) into rows on the XZ plane, biggest first, centred on the origin.
+ * @returns {{ pos: Map<string, THREE.Vector2>, halfW: number, halfD: number }}
+ */
+export function shelfPack(items, gap) {
+  const list = items.map((it) => ({ ...it, w: it.w ?? it.r, d: it.d ?? it.r })).sort((a, b) => b.w * b.d - a.w * a.d);
+  const area = list.reduce((s, it) => s + (2 * it.w + gap) * (2 * it.d + gap), 0);
+  const limit = Math.max(list[0] ? 2 * list[0].w : 0, Math.sqrt(area) * 1.5); // wider than deep: fits a 16:9 view
+  const rows = []; let row = null;
+  for (const it of list) {
+    const need = 2 * it.w + (row?.items.length ? gap : 0);
+    if (!row || row.width + need > limit) { row = { items: [], width: 0, depth: 0 }; rows.push(row); }
+    it.x = row.width + (row.items.length ? gap : 0) + it.w;
+    row.width += need;
+    row.depth = Math.max(row.depth, 2 * it.d);
+    row.items.push(it);
+  }
+  const totalD = rows.reduce((s, r) => s + r.depth, 0) + gap * Math.max(0, rows.length - 1);
+  const pos = new Map(); let z = -totalD / 2; let halfW = 0;
+  for (const r of rows) {
+    for (const it of r.items) pos.set(it.key, new THREE.Vector2(it.x - r.width / 2, z + r.depth / 2));
+    halfW = Math.max(halfW, r.width / 2);
+    z += r.depth + gap;
+  }
+  return { pos, halfW, halfD: totalD / 2 };
 }

@@ -22,7 +22,12 @@ const port = () => cfg().get('port', 7777);
 const workspaceRoot = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 // Each window pins its views to its own workspace, so parallel Claude sessions in different
 // projects each get their own panel and status bar.
-const projectQuery = () => (workspaceRoot() ? `?project=${encodeURIComponent(workspaceRoot())}` : '');
+const projectQuery = () => {
+  const q = new URLSearchParams();
+  if (workspaceRoot()) q.set('project', workspaceRoot());
+  q.set('quality', cfg().get('quality', 'balanced'));
+  return `?${q}`;
+};
 const log = (msg) => output?.appendLine(`[${new Date().toLocaleTimeString()}] ${msg}`);
 
 function request(method, urlPath, body) {
@@ -161,12 +166,38 @@ async function openPanel({ preserveFocus = false } = {}) {
     retainContextWhenHidden: true,
   });
   panel.iconPath = new vscode.ThemeIcon('pulse');
+  // The monitor page runs in an iframe and cannot reach the VS Code API itself: it posts
+  // { type: 'adm-open', path } to this webview, which relays it to the extension.
+  const nonce = require('crypto').randomBytes(16).toString('base64');
   panel.webview.html = `<!doctype html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#06080c}iframe{border:0;width:100%;height:100%;display:block}</style>
-</head><body><iframe src="${src.replace(/"/g, '&quot;')}" title="AI Dev Monitor"></iframe></body></html>`;
+</head><body><iframe src="${src.replace(/"/g, '&quot;')}" title="AI Dev Monitor"></iframe>
+<script nonce="${nonce}">
+  const vscode = acquireVsCodeApi();
+  const frame = document.querySelector('iframe');
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (e.source !== frame.contentWindow || !d || d.type !== 'adm-open' || typeof d.path !== 'string') return;
+    vscode.postMessage({ type: 'open', path: d.path });
+  });
+</script></body></html>`;
+  panel.webview.onDidReceiveMessage((msg) => { if (msg?.type === 'open') openInEditor(msg.path); });
   panel.onDidDispose(() => { panel = null; });
+}
+
+/** Open a file from the monitor (double-click / "open") in the main editor column. */
+async function openInEditor(file) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return;
+  const uri = vscode.Uri.file(file);
+  try {
+    const stat = await vscode.workspace.fs.stat(uri);
+    if (stat.type !== vscode.FileType.File) return;
+    await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.One, preview: true });
+  } catch (err) {
+    vscode.window.showWarningMessage(`AI Dev Monitor could not open ${file}: ${err.message}`);
+  }
 }
 
 // ------------------------------------------------------------------ lifecycle

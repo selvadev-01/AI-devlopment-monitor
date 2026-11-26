@@ -39,6 +39,15 @@
     </header>
 
     <aside class="left panel">
+      <section class="search">
+        <label class="search-box">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
+          <input id="search" type="search" placeholder="Search files" autocomplete="off" spellcheck="false"
+            role="combobox" aria-expanded="false" aria-controls="search-results" aria-autocomplete="list">
+          <kbd>/</kbd>
+        </label>
+        <ul class="search-results" id="search-results" role="listbox" hidden></ul>
+      </section>
       <section>
         <h2>Modules</h2>
         <ul class="modules" id="modules"></ul>
@@ -57,7 +66,7 @@
       <div class="vignette"></div>
       <div class="tooltip" id="tooltip" hidden></div>
       <div class="legend" id="legend"></div>
-      <div class="hint">Drag to orbit · Scroll to zoom · <kbd>T</kbd> theme · <kbd>F</kbd> overview · <kbd>Space</kbd> replay</div>
+      <div class="hint"><kbd>/</kbd> search · <kbd>T</kbd> theme · <kbd>F</kbd> overview · <kbd>Space</kbd> replay · double-click opens a file</div>
     </main>
 
     <section class="timeline" aria-label="Session replay">
