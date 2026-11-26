@@ -12,6 +12,19 @@ test run and subagent shows up as an animation, in one of two themes:
 
 Switch themes with the toggle in the top bar or press `T`. Press `F` to go back to the overview, and double-click a node to focus it.
 
+## Session replay
+
+![Replay timeline](docs/replay.png)
+
+The bar under the 3D view replays any recorded session:
+
+- Pick a session from the dropdown. Sessions come from the event log and are labelled with project, start time, event count and first prompt.
+- Use ▶/⏸ (or `Space`) to play and pause, and `1×`/`2×`/`4×`/`8×` to change speed. Drag the track or press `←`/`→` (±5 s) to seek.
+- Markers on the track are coloured by event kind. Tall markers are test results and new files. Hover the track to see what happened at that moment.
+- Idle gaps longer than 3 s are compressed, so a long session plays back quickly.
+- Seeking rebuilds the exact state at that moment: changed files, new files, failing tests and the 3D colours. Files created during the session are hidden until their create event.
+- Live events that arrive during a replay are counted on the button (`LIVE · 3 new`). Click **LIVE** (or press `Esc`) to return to the live view.
+
 ## Quick start
 
 ```bash

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { scanProject, toRel, moduleOf } from './scanner.js';
 import { normalizeHook } from './normalize.js';
+import { listSessions, sessionEvents, maxEventId } from './history.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, '..');
@@ -109,6 +110,7 @@ function ingest(payload) {
     failingFiles: ev.failingFiles || [],
     agentType: ev.agentType || null,
     session: ev.session,
+    root: state.root,
   };
 
   if (rel && (event.kind === 'edit' || event.kind === 'create')) state.modified.add(rel);
@@ -175,6 +177,20 @@ const handler = async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/state') {
       return json(res, 200, { summary: summary(), graph: state.graph, events: state.events });
     }
+    if (req.method === 'GET' && url.pathname === '/api/sessions') {
+      return json(res, 200, { sessions: listSessions(LOG_FILE), live: state.events.at(-1)?.session || null });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/replay') {
+      const seg = sessionEvents(LOG_FILE, url.searchParams.get('key') || '');
+      if (!seg) return json(res, 404, { ok: false, error: 'session not found' });
+      return json(res, 200, { key: seg.key, root: seg.root, events: seg.events });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/graph') {
+      const root = url.searchParams.get('root');
+      if (!root || path.resolve(root) === state.root) return json(res, 200, { graph: state.graph });
+      if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return json(res, 404, { ok: false, error: 'project folder not found' });
+      return json(res, 200, { graph: scanProject(path.resolve(root)) });
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/vendor/three/')) {
       return serveFile(res, THREE_DIR, decodeURIComponent(url.pathname.slice('/vendor/three/'.length)));
     }
@@ -206,6 +222,7 @@ export function startServer({ port = 7777, project, dataDir, silent = false } = 
   const dir = dataDir || path.join(APP_ROOT, 'data');
   fs.mkdirSync(dir, { recursive: true });
   LOG_FILE = path.join(dir, 'events.jsonl');
+  state.nextId = Math.max(state.nextId, maxEventId(LOG_FILE) + 1); // ids stay unique across restarts
 
   const server = http.createServer(handler);
   return new Promise((resolve, reject) => {

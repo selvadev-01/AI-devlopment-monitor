@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Dev Monitor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
   <link rel="stylesheet" href="/styles.css" />
   <script type="importmap">
     {
@@ -53,8 +53,22 @@
       <div class="vignette"></div>
       <div class="tooltip" id="tooltip" hidden></div>
       <div class="legend" id="legend"></div>
-      <div class="hint">Drag to orbit · Scroll to zoom · <kbd>T</kbd> switch theme · <kbd>F</kbd> overview</div>
+      <div class="hint">Drag to orbit · Scroll to zoom · <kbd>T</kbd> theme · <kbd>F</kbd> overview · <kbd>Space</kbd> replay</div>
     </main>
+
+    <section class="timeline" aria-label="Session replay">
+      <button class="tl-btn" id="tl-play" aria-label="Play replay"></button>
+      <button class="tl-speed" id="tl-speed" aria-label="Playback speed">1×</button>
+      <div class="tl-track is-live" id="tl-track">
+        <div class="tl-markers" id="tl-markers"></div>
+        <div class="tl-fill" id="tl-fill"></div>
+        <input class="tl-range" id="tl-range" type="range" min="0" max="1000" step="1" value="1000" aria-label="Replay position" />
+        <div class="tl-tip" id="tl-tip" hidden></div>
+      </div>
+      <span class="tl-time" id="tl-time">0 events</span>
+      <select class="tl-session" id="tl-session" aria-label="Session to replay"></select>
+      <button class="tl-live active" id="tl-live" aria-label="Back to live view">LIVE</button>
+    </section>
 
     <aside class="right panel">
       <h2>Activity <span class="count" id="event-count">0</span></h2>

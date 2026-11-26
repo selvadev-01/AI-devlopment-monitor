@@ -1,6 +1,7 @@
 // UI shell: WebSocket connection, panels, theme switch. 3D work lives in engine.js.
 import { GraphModel } from './model.js';
 import { Engine } from './engine.js';
+import { ReplayClock, TimelineUI, SPEEDS } from './replay.js';
 
 const $ = (id) => document.getElementById(id);
 const model = new GraphModel();
@@ -62,9 +63,14 @@ function setTheme(name) {
 }
 for (const b of document.querySelectorAll('.seg-btn')) b.addEventListener('click', () => setTheme(b.dataset.theme));
 window.addEventListener('keydown', (e) => {
-  if (e.target.closest?.('input, textarea')) return;
+  if (e.target.closest?.('input, textarea, select, button')) return;
   if (e.key === 't' || e.key === 'T') setTheme(theme === 'neural' ? 'galaxy' : 'neural');
   if (e.key === 'f' || e.key === 'F') engine.overview();
+  if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+  if (e.key === 'Escape') goLive();
+  if (mode === 'replay' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    seekQueued = rclock.t + (e.key === 'ArrowLeft' ? -5 : 5);
+  }
 });
 
 function renderLegend() {
@@ -221,33 +227,214 @@ function renderSummary(sum) {
 let wsOpen = false;
 let lastEventAt = 0;
 let lastKind = 'idle';
+let mode = 'live';           // 'live' | 'replay'
 function renderStatus() {
   const el = $('status');
+  if (mode === 'replay') {
+    el.className = 'status replay';
+    el.querySelector('b').textContent = 'REPLAY';
+    return;
+  }
   const live = wsOpen && lastKind !== 'idle' && Date.now() - lastEventAt < 30000;
   el.className = 'status ' + (!wsOpen ? '' : live ? 'live' : 'idle');
   el.querySelector('b').textContent = !wsOpen ? 'OFFLINE' : live ? 'LIVE' : 'IDLE';
 }
 setInterval(renderStatus, 1000);
 
-// ------------------------------------------------------------------ socket
-function onHello(msg) {
-  model.setGraph(msg.graph, true);
-  changedOrder.clear();
+function resetFeed(events) {
   $('feed').innerHTML = '<li class="empty">Events from Claude Code will appear here.</li>';
   eventCount = 0;
   $('event-count').textContent = 0;
+  for (const ev of events) pushFeed(ev, false);
+}
+
+// ------------------------------------------------------------------ replay
+const rclock = new ReplayClock();
+const liveClock = new ReplayClock();
+let liveEvents = [];
+let pending = 0;
+let replayGraph = null;
+let replayRoot = null;
+let selectedKey = null;
+let seekQueued = null;
+let liveSessionId = null;
+
+const timeline = new TimelineUI({
+  classOf: kindClass,
+  onToggle: () => togglePlay(),
+  onSeek: (k) => {
+    if (mode === 'replay') seekQueued = k * rclock.duration;
+    else startReplay(selectedKey, k);
+  },
+  onSpeed: () => {
+    rclock.speed = SPEEDS[(SPEEDS.indexOf(rclock.speed) + 1) % SPEEDS.length];
+    timeline.setSpeed(rclock.speed);
+  },
+  onLive: () => goLive(),
+  onPick: (key) => { selectedKey = key; startReplay(key, 0); },
+  onOpenPicker: () => refreshSessions(),
+});
+
+async function refreshSessions() {
+  try {
+    const r = await (await fetch('/api/sessions')).json();
+    liveSessionId = r.live;
+    if (!selectedKey || !r.sessions.some((s) => s.key === selectedKey)) {
+      selectedKey = (r.sessions.find((s) => s.session === r.live) || r.sessions[0])?.key || null;
+    }
+    timeline.setSessions(r.sessions, selectedKey);
+  } catch { /* server offline */ }
+}
+
+async function startReplay(key, frac = 0) {
+  if (!key) { await refreshSessions(); key = selectedKey; }
+  if (!key) return;
+  let r; let g;
+  try {
+    r = await (await fetch(`/api/replay?key=${encodeURIComponent(key)}`)).json();
+    if (!r.events?.length) return;
+    g = (await (await fetch(`/api/graph${r.root ? `?root=${encodeURIComponent(r.root)}` : ''}`)).json()).graph;
+  } catch { return; }
+  if (!g) return;
+
+  // Files created during the session should not exist at its start.
+  const created = new Set(r.events.filter((e) => e.kind === 'create' && e.file).map((e) => e.file));
+  const createdNodes = new Map(g.nodes.filter((n) => created.has(n.id)).map((n) => [n.id, n]));
+  for (const e of r.events) if (e.kind === 'create' && !e.node && createdNodes.has(e.file)) e.node = createdNodes.get(e.file);
+  replayGraph = {
+    ...g,
+    nodes: g.nodes.filter((n) => !created.has(n.id)),
+    edges: g.edges.filter((e) => !created.has(e.source) && !created.has(e.target)),
+  };
+  replayRoot = r.root || g.root;
+  selectedKey = key;
+  mode = 'replay';
+  pending = 0;
+  timeline.setPending(0);
+  rclock.load(r.events);
+  timeline.setMode('replay', true);
+  timeline.setMarkers(rclock);
+  resetReplayState(rclock.seek(frac * rclock.duration));
+  engine.setTheme(theme);
+  rclock.playing = true;
+  renderStatus();
+}
+
+function replaySummary(done) {
+  let agents = 0; let lastTest = null;
+  for (const e of done) {
+    if (e.kind === 'agent_start') agents++;
+    if (e.kind === 'agent_stop') agents = Math.max(0, agents - 1);
+    if (e.kind === 'idle') agents = 0;
+    if (e.kind === 'test_result') lastTest = { ok: e.ok, ...e.stats };
+  }
+  return {
+    project: replayGraph?.name, root: replayRoot, files: model.nodes.size, links: model.edges.length,
+    modified: model.modified.size, created: model.created.size, lastTest, activeAgents: agents,
+  };
+}
+
+/** Rebuild model + panels as they were after the first i events (no animation). */
+function resetReplayState(i) {
+  model.setGraph(replayGraph, true);
+  changedOrder.clear();
+  const done = rclock.events.slice(0, i);
+  for (const ev of done) {
+    model.apply(ev);
+    if (ev.file && model.modified.has(ev.file)) changedOrder.set(ev.file, ev.id);
+  }
+  resetFeed(done.slice(-150));
+  if (done.length) renderNow(done[done.length - 1]);
+  else renderNow({ kind: 'session', detail: 'Start of session' });
+  renderModules(); renderChanged(); renderSummary(replaySummary(done));
+}
+
+function playReplayEvent(ev) {
+  const meta = model.apply(ev);
+  if (ev.file && model.modified.has(ev.file)) changedOrder.set(ev.file, ev.id);
+  engine.handleEvent(ev, meta);
+  pushFeed(ev, true);
+  renderNow(ev);
+  if (ev.kind === 'edit' || ev.kind === 'create' || ev.kind === 'test_result') { renderModules(); renderChanged(); }
+  renderSummary(replaySummary(rclock.events.slice(0, rclock.i)));
+}
+
+function togglePlay() {
+  if (mode === 'live') { startReplay(selectedKey, 0); return; }
+  if (!rclock.playing && rclock.t >= rclock.duration) seekQueued = 0;
+  rclock.playing = !rclock.playing;
+  timeline.setMode('replay', rclock.playing);
+}
+
+async function goLive() {
+  if (mode === 'live') return;
+  mode = 'live';
+  rclock.playing = false;
+  seekQueued = null;
+  pending = 0;
+  timeline.setPending(0);
+  timeline.setMode('live', false);
+  try { onHello(await (await fetch('/api/state')).json()); } catch { /* reconnect will refresh */ }
+  renderStatus();
+}
+
+function currentLiveSession() {
+  const last = liveEvents[liveEvents.length - 1];
+  if (!last) return [];
+  const evs = liveEvents.filter((e) => e.session === last.session);
+  let start = 0;
+  evs.forEach((e, i) => { if (e.kind === 'session') start = i; });
+  return evs.slice(start);
+}
+
+function updateLiveTimeline() {
+  if (mode !== 'live') return;
+  liveClock.load(currentLiveSession());
+  liveClock.seek(liveClock.duration);
+  timeline.setMarkers(liveClock);
+  timeline.setProgress(liveClock);
+}
+
+let lastFrame = performance.now();
+function loop(now) {
+  const dt = Math.min(0.5, (now - lastFrame) / 1000); // real time, so slow frames don't slow the replay
+  lastFrame = now;
+  if (mode === 'replay') {
+    if (seekQueued != null) {
+      const i = rclock.seek(seekQueued);
+      seekQueued = null;
+      resetReplayState(i);
+      engine.sync();
+      engine.handleEvent({ kind: 'idle' }, {});
+    }
+    const wasPlaying = rclock.playing;
+    for (const ev of rclock.step(dt)) playReplayEvent(ev);
+    if (wasPlaying && !rclock.playing) timeline.setMode('replay', false);
+    timeline.setProgress(rclock);
+  }
+  requestAnimationFrame(loop);
+}
+
+// ------------------------------------------------------------------ socket
+function onHello(msg) {
+  liveEvents = (msg.events || []).slice(-500);
+  if (mode === 'replay') return;
+  model.setGraph(msg.graph, true);
+  changedOrder.clear();
   for (const ev of msg.events || []) {
     model.apply(ev);
     if (ev.file && model.modified.has(ev.file)) changedOrder.set(ev.file, ev.id);
-    pushFeed(ev, false);
   }
+  resetFeed((msg.events || []).slice(-150));
   const last = msg.events?.[msg.events.length - 1];
   if (last) { renderNow(last); lastKind = last.kind; lastEventAt = Date.parse(last.ts); }
   if (model.nodes.size) engine.setTheme(theme);
   renderModules(); renderChanged(); renderSummary(msg.summary);
+  updateLiveTimeline();
 }
 
 function onGraph(msg) {
+  if (mode === 'replay') return;
   if (msg.reset) {
     model.setGraph(msg.graph, true);
     changedOrder.clear();
@@ -261,6 +448,9 @@ function onGraph(msg) {
 
 function onEvent(msg) {
   const ev = msg.event;
+  liveEvents.push(ev);
+  if (liveEvents.length > 500) liveEvents.shift();
+  if (mode === 'replay') { pending++; timeline.setPending(pending); return; }
   const meta = model.apply(ev);
   if (ev.file && model.modified.has(ev.file)) changedOrder.set(ev.file, ev.id);
   if (!engine.theme && model.nodes.size) engine.setTheme(theme);
@@ -271,6 +461,8 @@ function onEvent(msg) {
   renderStatus();
   if (ev.kind === 'edit' || ev.kind === 'create' || ev.kind === 'test_result') { renderModules(); renderChanged(); }
   renderSummary(msg.summary);
+  updateLiveTimeline();
+  if (ev.kind === 'session') refreshSessions();
 }
 
 let retry = 500;
@@ -287,4 +479,8 @@ function connect() {
 }
 
 setTheme(theme);
+timeline.setMode('live', false);
+timeline.setSpeed(rclock.speed);
+refreshSessions();
 connect();
+requestAnimationFrame(loop);
