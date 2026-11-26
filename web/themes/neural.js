@@ -37,7 +37,7 @@ export class NeuralTheme {
   build(model) {
     this.model = model;
     const positions = layout(model);
-    this.radius = Math.max(30, layout.extent * 0.85); // camera distance, labels and effects follow the real size
+    this.radius = Math.max(22, layout.extent * 0.85); // camera distance, labels and effects follow the real size
     this.home.position.set(0, this.radius * 1.7, this.radius * 1.6); // high angle: regions read like a map
 
     this.sky = skySphere('sky_neural', 5200, 0x1a1e26); // dim: big bokeh blobs must not compete with the nodes; follows the camera
@@ -562,9 +562,13 @@ function layout(model) {
   for (const [t, ms] of groups) {
     const items = ms.map((m) => ({ key: m, r: ballR(model.modules.get(m).files.length) }));
     const packed = shelfPack(items, 7);
-    regions.push({ key: t, r: Math.max(packed.halfW, packed.halfD) + 6, packed });
+    regions.push({ key: t, r: Math.max(packed.halfW, packed.halfD), packed });
   }
-  const top = shelfPack(regions.map((g) => ({ key: g.key, r: g.r, w: g.packed.halfW + 6, d: g.packed.halfD + 6 })), 26);
+  // wide lanes only between real top-folder regions; when every module is its own top folder
+  // (a small project) the modules sit close together like one brain
+  const grouped = groups.size < mods.length;
+  const pad = grouped ? 6 : 0;
+  const top = shelfPack(regions.map((g) => ({ key: g.key, r: g.r, w: g.packed.halfW + pad, d: g.packed.halfD + pad })), grouped ? 26 : 9);
   for (const g of regions) {
     const c = top.pos.get(g.key);
     for (const [m, p] of g.packed.pos) {
