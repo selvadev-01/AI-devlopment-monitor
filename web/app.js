@@ -1,5 +1,5 @@
 // UI shell: WebSocket connection, panels, theme switch. 3D work lives in engine.js.
-import { GraphModel } from './model.js';
+import { GraphModel, displayName } from './model.js';
 import { Engine } from './engine.js';
 import { ReplayClock, TimelineUI, SPEEDS } from './replay.js';
 import { AGENT_COLORS } from './fx.js';
@@ -211,7 +211,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 't' || e.key === 'T') setTheme(THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length]);
   if (e.key === 'f' || e.key === 'F') engine.overview();
   if (e.key === ' ') { e.preventDefault(); togglePlay(); }
-  if (e.key === 'Escape') goLive();
+  if (e.key === 'Escape') { if (!summaryEl.hidden) { summaryEl.hidden = true; return; } goLive(); }
   if (mode === 'replay' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     seekQueued = rclock.t + (e.key === 'ArrowLeft' ? -5 : 5);
   }
@@ -788,9 +788,84 @@ bellEl.addEventListener('click', async () => {
 });
 fetch('/api/settings').then((r) => r.json()).then((s) => { alertsOn = s.alerts !== false; renderBell(); }).catch(() => renderBell());
 
+// ------------------------------------------------------------------ session summary
+// What Claude did in a session (server-computed from the full log): opens by itself when a long
+// turn ends, and from the Summary button for the live session or the one picked for replay.
+const summaryEl = $('summary');
+const fmtDur = (s) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+async function openSummary(key = null) {
+  let s;
+  try {
+    const q = key ? `?key=${encodeURIComponent(key)}` : Q;
+    const r = await fetch(`/api/summary${q}`);
+    if (!r.ok) throw new Error();
+    s = await r.json();
+  } catch {
+    summaryEl.replaceChildren(el('div', 'sum-empty', 'No session recorded yet.'));
+    summaryEl.hidden = false;
+    return;
+  }
+  const head = el('header');
+  const title = el('div', 'sum-title');
+  title.append(el('b', null, 'Session summary'), el('span', null, `${s.project || ''} · ${fmtDur(s.durationSec)} · ${s.prompts} prompt${s.prompts === 1 ? '' : 's'}`));
+  const close = el('button', 'sum-close', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close');
+  close.addEventListener('click', () => { summaryEl.hidden = true; });
+  head.append(title, close);
+  const parts = [head];
+  if (s.firstPrompt) parts.push(el('p', 'sum-prompt', `“${s.firstPrompt}”`));
+
+  const tile = (label, value, cls = '') => { const d = el('div', `sum-tile ${cls}`); d.append(el('b', null, value), el('span', null, label)); return d; };
+  const t = s.tests.last;
+  const grid = el('div', 'sum-grid');
+  grid.append(
+    tile('files read', String(s.files.read)),
+    tile('edited', String(s.files.edited), s.files.edited ? 'edit' : ''),
+    tile('new files', String(s.files.created), s.files.created ? 'create' : ''),
+    tile('lines', `+${s.lines.added} −${s.lines.removed}`),
+    tile('tests', t ? (t.ok ? `✓ ${t.passed ?? ''}` : `✗ ${t.failed ?? ''}`) : '—', t ? (t.ok ? 'ok' : 'fail') : ''),
+    tile('subagents', String(s.subagents.count), s.subagents.count ? 'agent' : ''),
+    tile('commands', String(s.commands)),
+    tile('tool calls', String(s.tools)),
+  );
+  parts.push(grid);
+
+  if (s.modules.length) {
+    const mods = el('div', 'sum-mods');
+    for (const m of s.modules) {
+      const chip = el('span', 'sum-chip', `${displayName(m.module)} · ${m.edits ? `${m.edits} edit${m.edits > 1 ? 's' : ''}` : `${m.touches} read${m.touches > 1 ? 's' : ''}`}`);
+      chip.style.setProperty('--c', model.colorOf.get(m.module) || 'var(--muted)');
+      mods.append(chip);
+    }
+    parts.push(el('h3', null, 'Modules'), mods);
+  }
+  if (s.topFiles.length) {
+    const ul = el('ul', 'sum-files');
+    for (const f of s.topFiles) {
+      const li = el('li');
+      const tag = el('span', `tag${f.created ? ' new' : f.edits ? '' : ' read'}`, f.created ? 'A' : f.edits ? 'M' : 'R');
+      const name = el('span', 'file', `‎${f.file}‎`); name.title = f.file; // LRM: keeps "." in place in the end-first ellipsis
+      li.append(tag, name, f.edits ? diffEl(f) : el('span', 'reads', `${f.reads}×`), openButton(f.file));
+      if (model.nodes.has(f.file)) li.addEventListener('click', () => goToFile(f.file));
+      ul.append(li);
+    }
+    parts.push(el('h3', null, 'Files'), ul);
+  }
+  const types = Object.entries(s.subagents.types);
+  if (types.length) parts.push(el('p', 'sum-foot', `Subagents: ${types.map(([k, v]) => `${v}× ${k}`).join(', ')}`));
+  summaryEl.replaceChildren(...parts);
+  summaryEl.hidden = false;
+}
+$('summary-btn').addEventListener('click', () => {
+  if (!summaryEl.hidden) { summaryEl.hidden = true; return; }
+  openSummary(mode === 'replay' ? selectedKey : null);
+});
+
 function onEvent(msg) {
   const ev = msg.event;
   if (mode !== 'replay') {
+    if (ev.alert?.level === 'done') openSummary(); // a long turn just ended: here is what happened
     if (ev.alert) showAlert(ev.alert);
     else if (!ev.agent && !['notify', 'idle', 'session'].includes(ev.kind)) clearAlert(); // Claude is working again
   }

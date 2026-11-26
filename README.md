@@ -63,6 +63,10 @@ The monitor tells you when Claude is waiting for you, even when you are in anoth
 - **Where**: a desktop notification from the monitor itself (Windows toast, macOS Notification Center, `notify-send` on Linux), so it works for Claude in a terminal with no browser open. Open monitor pages also show a banner, play a short chime and blink the tab title, and the VS Code status bar turns amber until Claude works again.
 - **Control**: the bell button in the top bar, or `adm alerts on | off | test`. The setting is kept in `data/settings.json` (`alerts`, `doneAfterSec`).
 
+## Session summary
+
+When a turn that took longer than 30 seconds ends, a card shows what Claude did in the session: duration, prompts, files read / edited / created, lines added and removed, the last test result, subagents, commands, the modules it worked in, and the files that changed most (click to fly there, `open` to open it). The **Summary** button in the top bar shows it any time, for the live session or for the session picked in the replay timeline. The numbers come from the full event log (`GET /api/summary`).
+
 ## Claude Code in a terminal (CLI)
 
 The hooks are installed in `~/.claude/settings.json`, so `claude` in any terminal reports to the monitor just like the VS Code extension does. A `SessionStart` hook (`scripts/ensure-server.js`, async, never blocks Claude) starts the monitor in the background when it is not running, so there is no `npm start` to remember. VS Code and the terminal share one monitor on port 7777.

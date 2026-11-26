@@ -12,6 +12,7 @@ import { scanProject, toRel, moduleFor } from './scanner.js';
 import { normalizeHook } from './normalize.js';
 import { listSessions, sessionEvents, maxEventId } from './history.js';
 import { decideAlert, notifyOS, readSettings, writeSettings } from './alerts.js';
+import { summarizeSession } from './summary.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, '..');
@@ -387,6 +388,20 @@ const handler = async (req, res) => {
       const all = listSessions(LOG_FILE);
       const sessions = p ? all.filter((s) => !s.root || keyOf(s.root) === p.key) : all;
       return json(res, 200, { sessions, live: p?.events.at(-1)?.session || null });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/summary') {
+      // ?key=<session segment> for a recorded session, else the project's live session
+      let key = url.searchParams.get('key');
+      const p = pickProject(url);
+      if (!key) {
+        const live = p?.events.at(-1)?.session;
+        key = listSessions(LOG_FILE).find((s) => s.session === live && (!s.root || !p || keyOf(s.root) === p.key))?.key;
+      }
+      const seg = key && sessionEvents(LOG_FILE, key);
+      if (!seg) return json(res, 404, { ok: false, error: 'no session yet' });
+      const proj = (seg.root && projectFor(seg.root, { exact: true })) || p;
+      const modOf = new Map((proj?.graph?.nodes || []).map((n) => [n.id, n.module]));
+      return json(res, 200, { key: seg.key, root: seg.root, project: seg.root ? path.basename(seg.root) : null, ...summarizeSession(seg.events, (f) => modOf.get(f)) });
     }
     if (req.method === 'GET' && url.pathname === '/api/replay') {
       const seg = sessionEvents(LOG_FILE, url.searchParams.get('key') || '');
