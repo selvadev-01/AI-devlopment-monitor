@@ -35,6 +35,18 @@ The installer writes a `.bak` backup before it changes the settings file. Start 
 Keep `npm start` running. The monitor follows whichever project Claude is working in.
 Each hook is a small Node script, [hooks/send-event.js](hooks/send-event.js). It has a timeout of under a second, always exits 0 and prints nothing, so Claude is never slowed down or blocked, even when the monitor is off.
 
+## VS Code extension
+
+```bash
+npm run ext:install   # bundles server + web into a .vsix (dist/) and installs it with the code CLI
+```
+
+Once installed, the extension starts the monitor server inside VS Code, so you don't need `npm start`. If a monitor is already running on the port, it reuses that one, and if that server stops, it takes over the port.
+
+- **Status bar**: shows what Claude is doing right now, for example `Edit users.ts` or `Tests: 1 failed`. Click it to open the 3D panel beside your editor.
+- **Commands**: `AI Dev Monitor: Open Monitor`, `Show This Workspace`, `Open in Browser`.
+- **Settings**: `aiDevMonitor.port` (default 7777) and `aiDevMonitor.autoStart` (default on).
+
 ## How it works
 
 ```

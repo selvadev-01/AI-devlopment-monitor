@@ -8,6 +8,9 @@ const short = (s, n = 90) => {
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 };
 
+// Prompts can carry harness-injected blocks like <system-reminder>…</system-reminder>; show only the user's text.
+const stripInjected = (s) => String(s ?? '').replace(/<([a-z][\w-]*)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+
 const TEST_CMD = /\b(jest|vitest|pytest|mocha|playwright test|cypress run|go test|cargo test|dotnet test|phpunit|rspec|npm (run )?test|npm t\b|pnpm (run )?test|yarn test|bun test)\b/i;
 
 function responseText(resp) {
@@ -50,7 +53,7 @@ export function normalizeHook(p) {
     case 'SessionStart':
       return { ...base, kind: 'session', detail: `Session started (${p.source || 'startup'})` };
     case 'UserPromptSubmit':
-      return { ...base, kind: 'prompt', detail: short(p.prompt, 140) };
+      return { ...base, kind: 'prompt', detail: short(stripInjected(p.prompt), 140) || 'New prompt' };
     case 'Stop':
       return { ...base, kind: 'idle', detail: 'Waiting for you' };
     case 'SubagentStop':
