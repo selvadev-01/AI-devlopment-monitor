@@ -120,6 +120,8 @@ function preTool(base, tool, input) {
         detail: short(input.description || input.subagent_type || 'Subagent', 80),
         launchType: input.subagent_type || 'general-purpose',
       };
+    case 'AskUserQuestion': // Claude stops to ask the user something
+      return { ...base, kind: 'ask', detail: short(input.questions?.[0]?.question || 'Claude has a question', 120) };
     case 'WebFetch':
     case 'WebSearch':
       return { ...base, kind: 'web', detail: `${tool} ${short(input.url || input.query, 70)}` };

@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws';
 import { scanProject, toRel, moduleFor } from './scanner.js';
 import { normalizeHook } from './normalize.js';
 import { listSessions, sessionEvents, maxEventId } from './history.js';
+import { decideAlert, notifyOS, readSettings, writeSettings } from './alerts.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, '..');
@@ -21,6 +22,8 @@ const HOST = '127.0.0.1';
 const MAX_EVENTS = 500;
 const MAX_PROJECTS = 12;
 let quiet = false;
+let DATA_DIR = path.join(APP_ROOT, 'data');
+const alertState = new Map(); // session id -> { turnStart, lastAlertAt, alertedTurn }
 let standalone = false; // true when run as its own process (npm start / adm), false inside VS Code
 let listenPort = null;
 const startedAt = Date.now();
@@ -275,6 +278,16 @@ function ingest(payload) {
   if (event.kind === 'test_result') p.lastTest = { ok: event.ok, ...event.stats, ts: event.ts };
   p.trackAgent(event, ev);
 
+  // Needs-you alert: permission prompts, questions, and the end of a long turn
+  const settings = readSettings(DATA_DIR);
+  if (!alertState.has(ev.session)) alertState.set(ev.session, {});
+  if (alertState.size > 200) alertState.delete(alertState.keys().next().value);
+  const alert = decideAlert(alertState.get(ev.session), { ...event, agent: event.agent || ev.agent }, payload, Date.now(), settings);
+  if (alert) {
+    event.alert = alert;
+    if (settings.alerts) notifyOS(`${path.basename(p.root)} · ${alert.title}`, alert.message, (e) => log('[monitor] notification failed:', e.message));
+  }
+
   p.events.push(event);
   if (p.events.length > MAX_EVENTS) p.events.shift();
   fs.appendFile(LOG_FILE, JSON.stringify(event) + '\n', () => {});
@@ -332,6 +345,21 @@ const handler = async (req, res) => {
       if (!p) return json(res, 404, { ok: false, error: 'project folder not found' });
       setFollow(p);
       return json(res, 200, p.summary());
+    }
+    if (url.pathname === '/api/settings') {
+      // JSON body required for POST, so a web page cannot change it without a CORS preflight
+      if (req.method === 'POST') {
+        if (!String(req.headers['content-type'] || '').includes('application/json')) return json(res, 415, { ok: false });
+        return json(res, 200, writeSettings(DATA_DIR, JSON.parse(await readBody(req))));
+      }
+      return json(res, 200, readSettings(DATA_DIR));
+    }
+    if (req.method === 'POST' && url.pathname === '/api/alert-test') {
+      if (!String(req.headers['content-type'] || '').includes('application/json')) return json(res, 415, { ok: false });
+      notifyOS('AI Dev Monitor', 'Test alert: this is how "Claude needs you" looks.', (e) => log('[monitor] notification failed:', e.message));
+      const test = { id: nextId++, ts: new Date().toISOString(), kind: 'notify', detail: 'Test alert', alert: { level: 'needs', title: 'Test alert', message: 'This is how "Claude needs you" looks.' } };
+      for (const c of wss?.clients || []) c.send(JSON.stringify({ type: 'alert', event: test }));
+      return json(res, 200, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/health') {
       // lets `adm` and the auto-start hook tell this monitor apart from another program on the port
@@ -393,6 +421,7 @@ const handler = async (req, res) => {
 export function startServer({ port = 7777, project, dataDir, silent = false } = {}) {
   quiet = silent;
   const dir = dataDir || path.join(APP_ROOT, 'data');
+  DATA_DIR = dir;
   fs.mkdirSync(dir, { recursive: true });
   LOG_FILE = path.join(dir, 'events.jsonl');
   nextId = Math.max(nextId, maxEventId(LOG_FILE) + 1); // ids stay unique across restarts

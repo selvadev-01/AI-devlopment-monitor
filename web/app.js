@@ -22,16 +22,18 @@ const ICONS = {
   prompt: '<path d="M4 5h16v11H8l-4 4z"/>',
   idle: '<path d="M9 6v12M15 6v12"/>',
   dot: '<circle cx="12" cy="12" r="3"/>',
+  ask: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h.01"/>',
+  notify: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
 };
 const LABEL = {
   read: 'READ', search: 'SEARCH', edit: 'EDIT', create: 'CREATE', bash: 'BASH', bash_result: 'DONE',
   test_result: 'TESTS', agent_start: 'SUBAGENT', agent_stop: 'AGENT DONE', prompt: 'PROMPT', idle: 'IDLE',
-  session: 'SESSION', notify: 'NOTICE', web: 'WEB', other: 'TOOL',
+  session: 'SESSION', notify: 'NOTICE', web: 'WEB', other: 'TOOL', ask: 'QUESTION',
 };
 const NOW_COLORS = {
   read: 'var(--read)', search: 'var(--search)', edit: 'var(--edit)', create: 'var(--create)', bash: 'var(--bash)',
   bash_result: 'var(--bash)', test_ok: 'var(--ok)', test_fail: 'var(--fail)', bash_fail: 'var(--fail)',
-  agent_start: 'var(--agent)', agent_stop: 'var(--agent)', prompt: 'var(--prompt)',
+  agent_start: 'var(--agent)', agent_stop: 'var(--agent)', prompt: 'var(--prompt)', ask: 'var(--edit)',
 };
 
 const store = {
@@ -730,8 +732,68 @@ function onGraph(msg) {
   renderModules(); renderChanged(); renderSummary(msg.summary);
 }
 
+// ------------------------------------------------------------------ needs-you alert
+// The server decides when Claude needs the user (permission, question, end of a long turn) and
+// also shows a desktop notification. The page adds a banner, a chime and a blinking tab title.
+const alertEl = $('alert-banner');
+const bellEl = $('bell');
+const baseTitle = document.title;
+let alertsOn = true; let titleTimer = null; let audio = null;
+
+function chime(level) {
+  try {
+    audio ??= new AudioContext();
+    const notes = level === 'done' ? [660, 880] : [880, 660, 880];
+    notes.forEach((f, i) => {
+      const o = audio.createOscillator(); const g = audio.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      const t = audio.currentTime + i * 0.16;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.18, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+      o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.16);
+    });
+  } catch { /* audio blocked until the user interacts with the page */ }
+}
+
+function showAlert(alert) {
+  if (!alertsOn) return;
+  alertEl.className = `alert-banner ${alert.level}`;
+  alertEl.replaceChildren();
+  const b = document.createElement('b'); b.textContent = alert.title;
+  const s = document.createElement('span'); s.textContent = alert.message || '';
+  alertEl.append(b, s);
+  alertEl.hidden = false;
+  chime(alert.level);
+  clearInterval(titleTimer);
+  let on = false;
+  titleTimer = setInterval(() => { on = !on; document.title = on ? `● ${alert.title}` : baseTitle; }, 900);
+}
+function clearAlert() {
+  alertEl.hidden = true;
+  clearInterval(titleTimer); titleTimer = null;
+  document.title = baseTitle;
+}
+alertEl.addEventListener('click', clearAlert);
+
+function renderBell() {
+  bellEl.classList.toggle('off', !alertsOn);
+  bellEl.setAttribute('aria-pressed', String(alertsOn));
+  bellEl.title = alertsOn ? 'Alerts on: desktop notification + sound when Claude needs you (click to turn off)' : 'Alerts off (click to turn on)';
+}
+bellEl.addEventListener('click', async () => {
+  alertsOn = !alertsOn; renderBell(); if (!alertsOn) clearAlert();
+  try {
+    const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alerts: alertsOn }) });
+    alertsOn = (await r.json()).alerts; renderBell();
+  } catch { /* offline: keep the local choice */ }
+});
+fetch('/api/settings').then((r) => r.json()).then((s) => { alertsOn = s.alerts !== false; renderBell(); }).catch(() => renderBell());
+
 function onEvent(msg) {
   const ev = msg.event;
+  if (mode !== 'replay') {
+    if (ev.alert) showAlert(ev.alert);
+    else if (!ev.agent && !['notify', 'idle', 'session'].includes(ev.kind)) clearAlert(); // Claude is working again
+  }
   liveEvents.push(ev);
   if (liveEvents.length > 500) liveEvents.shift();
   if (mode === 'replay') { pending++; timeline.setPending(pending); return; }
@@ -760,6 +822,7 @@ function connect() {
     if (msg.type === 'hello') onHello(msg);
     else if (msg.type === 'graph') onGraph(msg);
     else if (msg.type === 'event') onEvent(msg);
+    else if (msg.type === 'alert') showAlert(msg.event.alert); // test alert
   };
 }
 

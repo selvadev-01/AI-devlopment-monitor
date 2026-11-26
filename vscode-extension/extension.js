@@ -83,6 +83,16 @@ const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 function showStatus(ev) {
   if (!statusItem) return;
+  // Needs-you alert: stays in the status bar (warning colour) until Claude works again
+  if (ev?.alert) {
+    statusItem.text = `$(bell) ${truncate(ev.alert.title, 40)}`;
+    statusItem.tooltip = `${ev.alert.message || ''}
+
+Click to open AI Dev Monitor`;
+    statusItem.backgroundColor = new vscode.ThemeColor(ev.alert.level === 'done' ? 'statusBarItem.prominentBackground' : 'statusBarItem.warningBackground');
+    return;
+  }
+  if (ev && (ev.agent || ev.kind === 'notify')) return; // keep the alert until the main Claude moves on
   if (!ev || ev.kind === 'idle') {
     statusItem.text = '$(pulse) Claude idle';
     statusItem.tooltip = 'AI Dev Monitor: click to open the 3D view';

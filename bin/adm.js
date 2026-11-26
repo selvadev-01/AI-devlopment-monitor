@@ -5,6 +5,7 @@
 //   adm start        start it in the background without opening a browser
 //   adm stop         stop a monitor started by adm / npm start (not the one inside VS Code)
 //   adm status       show whether it runs, where, and which projects it has seen
+//   adm alerts [on|off|test]  desktop notification + sound when Claude needs you
 // MONITOR_PORT picks another port (default 7777).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,8 +59,26 @@ switch (cmd) {
     } catch { /* older server */ }
     break;
   }
+  case 'alerts': {
+    const h = await health();
+    if (!h) { console.log(`No monitor running on port ${PORT}. Start it with: adm start`); break; }
+    const api = (p, body) => fetch(`http://127.0.0.1:${PORT}${p}`, body
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}).then((r) => r.json());
+    if (arg === 'on' || arg === 'off') {
+      const s = await api('/api/settings', { alerts: arg === 'on' });
+      console.log(`Alerts ${s.alerts ? 'on' : 'off'}.`);
+    } else if (arg === 'test') {
+      await api('/api/alert-test', {});
+      console.log('Sent a test alert: desktop notification, plus banner and sound in open monitor pages.');
+    } else {
+      const s = await api('/api/settings');
+      console.log(`Alerts ${s.alerts ? 'on' : 'off'}: permission prompts, questions, and turns longer than ${s.doneAfterSec} s.`);
+      console.log('Use: adm alerts on | off | test');
+    }
+    break;
+  }
   case 'help': case '--help': case '-h':
-    console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 8).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 9).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     break;
   default:
     console.error(`Unknown command "${cmd}". Run: adm help`);

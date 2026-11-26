@@ -55,6 +55,14 @@ Each subagent is matched to the exact Task/Agent call that launched it: Claude C
 
 With many subagents at once, every agent gets its own colour (ten colours), crowded tags shrink to coloured dots, the overview pulls back so every ship stays in frame, the activity feed groups their parallel actions ("READ · 10 agents"), and the Subagents panel switches to one line per agent.
 
+## Needs-you alerts
+
+The monitor tells you when Claude is waiting for you, even when you are in another window:
+
+- **When**: Claude asks for permission, asks you a question (AskUserQuestion), waits for your input, or finishes a turn that took longer than 30 seconds. Short back-and-forth replies stay quiet, subagents never alert, and you get no second reminder after a "finished" alert.
+- **Where**: a desktop notification from the monitor itself (Windows toast, macOS Notification Center, `notify-send` on Linux), so it works for Claude in a terminal with no browser open. Open monitor pages also show a banner, play a short chime and blink the tab title, and the VS Code status bar turns amber until Claude works again.
+- **Control**: the bell button in the top bar, or `adm alerts on | off | test`. The setting is kept in `data/settings.json` (`alerts`, `doneAfterSec`).
+
 ## Claude Code in a terminal (CLI)
 
 The hooks are installed in `~/.claude/settings.json`, so `claude` in any terminal reports to the monitor just like the VS Code extension does. A `SessionStart` hook (`scripts/ensure-server.js`, async, never blocks Claude) starts the monitor in the background when it is not running, so there is no `npm start` to remember. VS Code and the terminal share one monitor on port 7777.

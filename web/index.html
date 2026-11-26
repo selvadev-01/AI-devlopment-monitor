@@ -34,6 +34,9 @@
           <button class="seg-btn" data-theme="neural" role="tab">Neural</button>
           <button class="seg-btn" data-theme="galaxy" role="tab">Galaxy</button>
         </div>
+        <button class="bell" id="bell" type="button" aria-label="Needs-you alerts" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/><path class="slash" d="M4 4l16 16"/></svg>
+        </button>
         <span class="status" id="status"><i></i><b>OFFLINE</b></span>
       </div>
     </header>
@@ -65,6 +68,7 @@
     <main class="stage" id="stage">
       <div class="vignette"></div>
       <div class="tooltip" id="tooltip" hidden></div>
+      <div class="alert-banner" id="alert-banner" role="alert" hidden></div>
       <div class="legend" id="legend"></div>
       <div class="hint"><kbd>/</kbd> search · <kbd>T</kbd> theme · <kbd>F</kbd> overview · <kbd>Space</kbd> replay · double-click opens a file</div>
     </main>
