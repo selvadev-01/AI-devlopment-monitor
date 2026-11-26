@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Dev Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/vendor/three/build/three.module.js",
+        "three/addons/": "/vendor/three/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="4.5" cy="6" r="1.6"/><circle cx="19.5" cy="6.5" r="1.6"/><circle cx="18" cy="19" r="1.6"/><circle cx="5" cy="18" r="1.6"/><path d="M6 6.8 9.6 10.4M18 7.4l-3.6 3M16.8 17.8l-2.6-3.6M6.4 17.2l3.2-3.2"/></svg>
+        <span class="brand-name">AI Dev Monitor</span>
+        <span class="project" id="project">—</span>
+      </div>
+      <div class="now" id="now">
+        <span class="now-kind" id="now-kind">IDLE</span>
+        <span class="now-detail" id="now-detail">Waiting for Claude Code activity…</span>
+        <span class="now-stats" id="now-stats"></span>
+      </div>
+      <div class="top-right">
+        <div class="seg" role="tablist" aria-label="Theme">
+          <button class="seg-btn" data-theme="neural" role="tab">Neural</button>
+          <button class="seg-btn" data-theme="galaxy" role="tab">Galaxy</button>
+        </div>
+        <span class="status" id="status"><i></i><b>OFFLINE</b></span>
+      </div>
+    </header>
+
+    <aside class="left panel">
+      <section>
+        <h2>Modules</h2>
+        <ul class="modules" id="modules"></ul>
+      </section>
+      <section class="grow">
+        <h2>Changed files <span class="count" id="changed-count">0</span></h2>
+        <ul class="changed" id="changed"><li class="empty">No changes yet</li></ul>
+      </section>
+    </aside>
+
+    <main class="stage" id="stage">
+      <div class="vignette"></div>
+      <div class="tooltip" id="tooltip" hidden></div>
+      <div class="legend" id="legend"></div>
+      <div class="hint">Drag to orbit · Scroll to zoom · <kbd>T</kbd> switch theme · <kbd>F</kbd> overview</div>
+    </main>
+
+    <aside class="right panel">
+      <h2>Activity <span class="count" id="event-count">0</span></h2>
+      <ol class="feed" id="feed"><li class="empty">Events from Claude Code will appear here.</li></ol>
+    </aside>
+
+    <footer class="statusbar">
+      <span><b id="sb-files">0</b> files</span>
+      <span><b id="sb-links">0</b> links</span>
+      <span><b id="sb-modified">0</b> modified</span>
+      <span><b id="sb-created">0</b> new</span>
+      <span id="sb-tests" class="tests">tests —</span>
+      <span id="sb-agents">0 agents</span>
+      <span class="path" id="sb-path"></span>
+    </footer>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+{
+  "name": "ai-dev-monitor",
+  "displayName": "AI Dev Monitor",
+  "description": "Live 3D view (Neural / Galaxy) of what Claude Code is doing in your project.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Visualization", "Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "aiDevMonitor.open", "title": "Open Monitor", "category": "AI Dev Monitor", "icon": "$(pulse)" },
+      { "command": "aiDevMonitor.showWorkspace", "title": "Show This Workspace", "category": "AI Dev Monitor" },
+      { "command": "aiDevMonitor.openInBrowser", "title": "Open in Browser", "category": "AI Dev Monitor" }
+    ],
+    "configuration": {
+      "title": "AI Dev Monitor",
+      "properties": {
+        "aiDevMonitor.port": {
+          "type": "number",
+          "default": 7777,
+          "description": "Port of the local monitor server. The Claude Code hooks send events to this port."
+        },
+        "aiDevMonitor.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the monitor server when VS Code starts, so events are captured even while the panel is closed."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "three": "0.170.0",
+    "ws": "8.18.0"
+  }
+}
