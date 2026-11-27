@@ -14,17 +14,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applyHooks } from '../server/hooks.js';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SENDER = path.resolve(HERE, '..', 'hooks', 'send-event.js').split(path.sep).join('/');
-const MARKER = 'send-event.js';
 const ENSURE = path.resolve(HERE, 'ensure-server.js').split(path.sep).join('/');
-const ENSURE_MARKER = 'ensure-server.js';
-const COMMAND = `node "${SENDER}"`;
 const PORT = Number(process.env.MONITOR_PORT || 7777);
-const URL_ = `http://127.0.0.1:${PORT}/event`;
-
-const TOOL_EVENTS = ['PreToolUse', 'PostToolUse'];
-const PLAIN_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'Notification'];
 
 const args = process.argv.slice(2);
 const uninstall = args.includes('--uninstall');
@@ -42,33 +37,11 @@ if (fs.existsSync(target)) {
   }
   fs.writeFileSync(target + '.bak', raw);
 }
-settings.hooks ??= {};
-
-// Our entries, old (command) or new (http on 127.0.0.1/event), so re-installs replace them.
-const isOurs = (group) => (group.hooks || []).some((h) =>
-  String(h.command || '').includes(MARKER) || String(h.command || '').includes(ENSURE_MARKER)
-  || /^http:\/\/127\.0\.0\.1:\d+\/event$/.test(String(h.url || '')));
 const autostart = !args.includes('--no-autostart');
 const useCommand = args.includes('--command');
-const hook = useCommand
-  ? { type: 'command', command: COMMAND, async: true }
-  : { type: 'http', url: URL_, timeout: 3 };
-
-for (const evt of [...TOOL_EVENTS, ...PLAIN_EVENTS]) {
-  const groups = (settings.hooks[evt] || []).filter((g) => !isOurs(g));
-  if (!uninstall) {
-    const group = { hooks: [{ ...hook }] };
-    if (TOOL_EVENTS.includes(evt)) group.matcher = '*';
-    groups.push(group);
-    if (evt === 'SessionStart' && autostart) {
-      // a custom port is passed as an argument (an env prefix does not work in every shell)
-      const portArg = PORT === 7777 ? '' : ` --port ${PORT}`;
-      groups.push({ hooks: [{ type: 'command', command: `node "${ENSURE}"${portArg}`, async: true, timeout: 15 }] });
-    }
-  }
-  if (groups.length) settings.hooks[evt] = groups; else delete settings.hooks[evt];
-}
-if (!Object.keys(settings.hooks).length) delete settings.hooks;
+// a custom port is passed as an argument (an env prefix does not work in every shell)
+const ensureCmd = `node "${ENSURE}"${PORT === 7777 ? '' : ` --port ${PORT}`}`;
+settings = applyHooks(settings, { port: PORT, command: useCommand ? `node "${SENDER}"` : null, autostart: autostart ? ensureCmd : null, uninstall });
 
 fs.mkdirSync(path.dirname(target), { recursive: true });
 fs.writeFileSync(target, JSON.stringify(settings, null, 2) + '\n');

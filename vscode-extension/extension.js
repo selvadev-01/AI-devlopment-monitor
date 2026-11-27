@@ -210,6 +210,53 @@ async function openInEditor(file) {
   }
 }
 
+// ------------------------------------------------------------------ Claude Code hooks
+// Claude Code reports to the monitor through hooks in ~/.claude/settings.json. The extension can add
+// them itself (asked once, never silently), so no clone of the repo is needed. It adds only the
+// http hooks: VS Code starts the server, and an auto-start hook the CLI installed is left as it is.
+const SETTINGS = path.join(require('os').homedir(), '.claude', 'settings.json');
+const hooksLib = () => import(pathToFileURL(path.join(ctx.extensionPath, 'server', 'hooks.js')).href);
+
+function readClaudeSettings() {
+  const fs = require('fs');
+  if (!fs.existsSync(SETTINGS)) return { settings: {}, raw: null };
+  const raw = fs.readFileSync(SETTINGS, 'utf8');
+  return { settings: raw.trim() ? JSON.parse(raw) : {}, raw }; // throws on broken JSON: never overwrite it
+}
+
+async function writeHooks(uninstall) {
+  const fs = require('fs');
+  let cur;
+  try { cur = readClaudeSettings(); } catch (e) {
+    vscode.window.showErrorMessage(`AI Dev Monitor did not change ${SETTINGS}: it is not valid JSON (${e.message}).`);
+    return false;
+  }
+  const { applyHooks } = await hooksLib();
+  const next = applyHooks(cur.settings, { port: port(), autostart: 'keep', uninstall });
+  fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
+  if (cur.raw != null) fs.writeFileSync(SETTINGS + '.bak', cur.raw);
+  fs.writeFileSync(SETTINGS, JSON.stringify(next, null, 2) + '\n');
+  log(`${uninstall ? 'Removed' : 'Installed'} Claude Code hooks in ${SETTINGS} (backup: settings.json.bak)`);
+  vscode.window.showInformationMessage(uninstall
+    ? 'AI Dev Monitor: Claude Code hooks removed.'
+    : 'AI Dev Monitor: Claude Code hooks installed. Start a new Claude Code session (or restart one) to see it here.');
+  return true;
+}
+
+/** On start: offer to add the hooks when they are missing or point to another port. Asked once per answer. */
+async function offerHooks() {
+  if (ctx.globalState.get('hooksPrompt') === 'never') return;
+  let status;
+  try { status = (await hooksLib()).hooksStatus(readClaudeSettings().settings, port()); } catch { return; }
+  if (status.installed) return;
+  const text = status.wrongPort
+    ? `AI Dev Monitor: your Claude Code hooks send to port ${status.ports.join(', ')}, but the monitor uses ${port()}. Update them?`
+    : 'AI Dev Monitor needs Claude Code hooks to see what Claude does. Add them to ~/.claude/settings.json?';
+  const pick = await vscode.window.showInformationMessage(text, status.wrongPort ? 'Update hooks' : 'Install hooks', 'Not now', "Don't ask again");
+  if (pick === 'Install hooks' || pick === 'Update hooks') await writeHooks(false);
+  else if (pick === "Don't ask again") ctx.globalState.update('hooksPrompt', 'never');
+}
+
 // ------------------------------------------------------------------ lifecycle
 async function activate(context) {
   ctx = context;
@@ -233,7 +280,13 @@ async function activate(context) {
       await ensureServer();
       vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${port()}/${projectQuery()}`)));
     }),
+    vscode.commands.registerCommand('aiDevMonitor.installHooks', () => writeHooks(false)),
+    vscode.commands.registerCommand('aiDevMonitor.removeHooks', async () => {
+      const ok = await vscode.window.showWarningMessage('Remove the AI Dev Monitor hooks from ~/.claude/settings.json? Claude Code will stop reporting to the monitor.', { modal: true }, 'Remove');
+      if (ok === 'Remove') writeHooks(true);
+    }),
   );
+  offerHooks();
 
   if (cfg().get('autoStart', true)) {
     try { log(`Server mode: ${await ensureServer()}`); } catch (e) { log(`Server start failed: ${e.message}`); }

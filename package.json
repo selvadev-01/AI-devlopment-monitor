@@ -1,6 +1,6 @@
 {
   "name": "ai-development-monitor",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "Live 3D visualization of what Claude Code is doing in your project (Neural + Galaxy themes).",
   "type": "module",
@@ -15,10 +15,12 @@
     "hooks:install": "node scripts/install-hooks.js",
     "hooks:uninstall": "node scripts/install-hooks.js --uninstall",
     "ext:build": "node scripts/build-extension.js",
-    "ext:install": "node scripts/build-extension.js --install"
+    "ext:install": "node scripts/build-extension.js --install",
+    "ext:publish": "node scripts/publish-extension.js"
   },
   "dependencies": {
     "three": "0.170.0",
     "ws": "8.18.0"
-  }
+  },
+  "license": "MIT"
 }

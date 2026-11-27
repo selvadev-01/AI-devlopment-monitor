@@ -1,0 +1,25 @@
+# When a GitHub release is published, build the extension and publish it to the
+# VS Code Marketplace and Open VSX. Needs the repository secrets VSCE_PAT and OVSX_PAT;
+# a store whose secret is missing is skipped.
+name: Publish extension
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm test
+      - run: npm run ext:build
+      - run: npm run ext:publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}

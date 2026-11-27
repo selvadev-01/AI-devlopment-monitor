@@ -1,20 +1,77 @@
 {
   "name": "ai-dev-monitor",
   "displayName": "AI Dev Monitor",
-  "description": "Live 3D view (Neural / Galaxy) of what Claude Code is doing in your project.",
-  "version": "0.2.5",
-  "publisher": "local",
-  "private": true,
-  "license": "UNLICENSED",
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Visualization", "Other"],
+  "description": "See what Claude Code is doing, live: a 3D view (Neural or Galaxy) of your project with every file Claude reads, edits and tests, its subagents, needs-you alerts, session summaries and token cost.",
+  "version": "0.2.6",
+  "publisher": "selvadev",
+  "license": "MIT",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0b0f16",
+    "theme": "dark"
+  },
+  "keywords": [
+    "claude",
+    "claude code",
+    "anthropic",
+    "ai",
+    "agent",
+    "subagents",
+    "visualization",
+    "3d",
+    "monitor",
+    "hooks",
+    "token usage"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/selvadev-01/AI-devlopment-monitor.git"
+  },
+  "homepage": "https://github.com/selvadev-01/AI-devlopment-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/selvadev-01/AI-devlopment-monitor/issues"
+  },
+  "qna": false,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "AI",
+    "Other"
+  ],
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
-      { "command": "aiDevMonitor.open", "title": "Open Monitor", "category": "AI Dev Monitor", "icon": "$(pulse)" },
-      { "command": "aiDevMonitor.showWorkspace", "title": "Show This Workspace", "category": "AI Dev Monitor" },
-      { "command": "aiDevMonitor.openInBrowser", "title": "Open in Browser", "category": "AI Dev Monitor" }
+      {
+        "command": "aiDevMonitor.open",
+        "title": "Open Monitor",
+        "category": "AI Dev Monitor",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "aiDevMonitor.showWorkspace",
+        "title": "Show This Workspace",
+        "category": "AI Dev Monitor"
+      },
+      {
+        "command": "aiDevMonitor.openInBrowser",
+        "title": "Open in Browser",
+        "category": "AI Dev Monitor"
+      },
+      {
+        "command": "aiDevMonitor.installHooks",
+        "title": "Install Claude Code Hooks",
+        "category": "AI Dev Monitor"
+      },
+      {
+        "command": "aiDevMonitor.removeHooks",
+        "title": "Remove Claude Code Hooks",
+        "category": "AI Dev Monitor"
+      }
     ],
     "configuration": {
       "title": "AI Dev Monitor",
@@ -26,7 +83,11 @@
         },
         "aiDevMonitor.quality": {
           "type": "string",
-          "enum": ["low", "balanced", "high"],
+          "enum": [
+            "low",
+            "balanced",
+            "high"
+          ],
           "default": "balanced",
           "enumDescriptions": [
             "Lightest: no anti-aliasing, 30 fps (10 when idle). Best for older laptops or battery.",

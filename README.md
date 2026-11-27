@@ -127,14 +127,20 @@ Rendering drops to the idle frame rate after 6 s without events or input, and st
 
 ## VS Code extension
 
+Install **AI Dev Monitor** (`selvadev.ai-dev-monitor`) from the VS Code Marketplace, or from Open VSX for VSCodium and Cursor. On first start it offers to add the Claude Code hooks to `~/.claude/settings.json`, so you don't need this repository just to use it. You can also add or remove them with the commands **AI Dev Monitor: Install Claude Code Hooks** and **Remove Claude Code Hooks**.
+
+To build and install the extension from this checkout:
+
 ```bash
 npm run ext:install   # bundles server + web into a .vsix (dist/) and installs it with the code CLI
 ```
 
+Builds before 0.2.6 were named `local.ai-dev-monitor`; `ext:install` removes that copy.
+
 Once installed, the extension starts the monitor server inside VS Code, so you don't need `npm start`. If a monitor is already running on the port, it reuses that one, and if that server stops, it takes over the port.
 
 - **Status bar**: shows what Claude is doing right now, for example `Edit users.ts` or `Tests: 1 failed`. Click it to open the 3D panel beside your editor.
-- **Commands**: `AI Dev Monitor: Open Monitor`, `Show This Workspace`, `Open in Browser`.
+- **Commands**: `AI Dev Monitor: Open Monitor`, `Show This Workspace`, `Open in Browser`, `Install Claude Code Hooks`, `Remove Claude Code Hooks`.
 - **Settings**: `aiDevMonitor.port` (default 7777) and `aiDevMonitor.autoStart` (default on).
 
 ## Subagents
@@ -191,8 +197,20 @@ Test output is parsed for Jest, Vitest, pytest, Mocha and similar runners (for e
 
 Set `MONITOR_PORT` to use a port other than 7777. To start the monitor on a specific project, use `npm start -- --project D:/my-app`.
 
+### Publishing
+
+The release flow is `npm run ext:build`, then `npm run ext:publish`. The publish step uses two tokens:
+
+- `VSCE_PAT`: an Azure DevOps token with the *Marketplace (Manage)* scope, for the `selvadev` publisher.
+- `OVSX_PAT`: an Open VSX token for the `selvadev` namespace.
+
+A store whose token is not set is skipped. Once the same tokens are saved as repository secrets, the workflow in [.github/workflows/publish-extension.yml](.github/workflows/publish-extension.yml) runs the same steps every time a GitHub release is published.
+
 ## Next steps
 
-- Package as a VS Code extension (webview panel) and a Tauri desktop app
-- Timeline scrubber to replay a session from `data/events.jsonl`
-- Attribute tool calls to their subagent once hooks expose an agent id
+- Tauri desktop app
+- Cost dashboard across sessions and projects
+
+## License
+
+MIT. See [LICENSE](LICENSE).

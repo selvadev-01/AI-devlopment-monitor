@@ -16,6 +16,7 @@ for (const dir of ['server', 'web']) {
   fs.rmSync(path.join(EXT, dir), { recursive: true, force: true });
   fs.cpSync(path.join(ROOT, dir), path.join(EXT, dir), { recursive: true });
 }
+fs.copyFileSync(path.join(ROOT, 'LICENSE'), path.join(EXT, 'LICENSE'));
 // server/ is ESM while extension.js is CommonJS: mark the folder as a module scope.
 fs.writeFileSync(path.join(EXT, 'server', 'package.json'), JSON.stringify({ type: 'module' }, null, 2) + '\n');
 
@@ -24,10 +25,12 @@ run('npm install --omit=dev --no-audit --no-fund', EXT);
 const { version, name } = JSON.parse(fs.readFileSync(path.join(EXT, 'package.json'), 'utf8'));
 fs.mkdirSync(DIST, { recursive: true });
 const vsix = path.join(DIST, `${name}-${version}.vsix`);
-run(`npx --yes @vscode/vsce@3.2.1 package --allow-missing-repository --skip-license -o "${vsix}"`, EXT);
+run(`npx --yes @vscode/vsce@3.2.1 package -o "${vsix}"`, EXT);
 console.log(`\nBuilt ${vsix}`);
 
 if (process.argv.includes('--install')) {
+  // builds before 0.2.6 were published as local.ai-dev-monitor: remove that copy, or two monitors fight over the port
+  try { execSync('code --uninstall-extension local.ai-dev-monitor', { stdio: 'ignore' }); console.log('> removed the old local.ai-dev-monitor build'); } catch { /* not installed */ }
   run(`code --install-extension "${vsix}" --force`);
   console.log('Installed. Run "Developer: Reload Window" in VS Code to activate it.');
 }

@@ -10,3 +10,5 @@ node_modules/three/examples/jsm/webxr/**
 node_modules/three/examples/jsm/physics/**
 node_modules/three/examples/jsm/exporters/**
 node_modules/three/examples/jsm/transpiler/**
+data/**
+**/*.bak
