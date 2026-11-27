@@ -1,6 +1,6 @@
 {
   "name": "ai-development-monitor",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Live 3D visualization of what Claude Code is doing in your project (Neural + Galaxy themes).",
   "type": "module",
