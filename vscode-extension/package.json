@@ -2,7 +2,7 @@
   "name": "ai-dev-monitor",
   "displayName": "AI Dev Monitor",
   "description": "Live 3D view (Neural / Galaxy) of what Claude Code is doing in your project.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "local",
   "private": true,
   "license": "UNLICENSED",
