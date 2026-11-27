@@ -104,8 +104,35 @@ const abs = (f) => path.join(ROOT_DIR, MAP.get(f) || f);
 const nLines = (n) => Array.from({ length: n }, (_, i) => `line ${i}`).join('\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms / SPEED));
 
+// A fake Claude Code transcript (data/demo-transcripts) with token counts, so the token / cost view
+// has numbers to show: each hook call stands for one API response of the agent that made it.
+const TDIR = path.resolve(HERE, '..', 'data', 'demo-transcripts');
+const TRANSCRIPT = path.join(TDIR, 'demo-session.jsonl');
+const ctx = new Map(); // agent id ('' = main) -> context size so far
+function resetTranscripts() {
+  fs.rmSync(TDIR, { recursive: true, force: true });
+  fs.mkdirSync(path.join(TDIR, 'demo-session', 'subagents'), { recursive: true });
+  ctx.clear();
+}
+let msgN = 0;
+function logUsage(p) {
+  if (p.hook_event_name === 'SessionStart' || p.hook_event_name === 'SubagentStop' || p.tool_name === 'Task') return;
+  const id = p.agent_id || '';
+  const model = !id ? 'claude-opus-5-5' : p.agent_type === 'Explore' ? 'claude-haiku-5-5' : 'claude-sonnet-5-5';
+  const seen = ctx.get(id) ?? (id ? 6000 : 24000);
+  const grow = 900 + Math.round(Math.random() * 2600);
+  ctx.set(id, seen + grow);
+  const line = { type: 'assistant', timestamp: new Date().toISOString(), message: {
+    id: `msg_demo_${++msgN}`, model, role: 'assistant',
+    usage: { input_tokens: 3, output_tokens: 120 + Math.round(Math.random() * 700), cache_read_input_tokens: seen,
+      cache_creation_input_tokens: grow, cache_creation: { ephemeral_1h_input_tokens: grow, ephemeral_5m_input_tokens: 0 } } } };
+  const file = id ? path.join(TDIR, 'demo-session', 'subagents', `agent-${id}.jsonl`) : TRANSCRIPT;
+  try { fs.appendFileSync(file, JSON.stringify(line) + '\n'); } catch { /* demo only */ }
+}
+
 async function send(payload) {
-  const full = { session_id: 'demo-session', cwd: ROOT_DIR, transcript_path: '', ...payload };
+  const full = { session_id: 'demo-session', cwd: ROOT_DIR, transcript_path: TRANSCRIPT, ...payload };
+  logUsage(full);
   try {
     await fetch(`http://127.0.0.1:${PORT}/event`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full),
@@ -216,11 +243,8 @@ async function swarm(n) {
   // (<session>/subagents/agent-<id>.meta.json) naming that tool_use_id. The files live in
   // data/demo-transcripts, never in the project. Odd agents get theirs late, to exercise the
   // server's correction of a guessed binding.
-  const tdir = path.resolve(HERE, '..', 'data', 'demo-transcripts');
-  const transcript = path.join(tdir, 'demo-session.jsonl');
-  const metaDir = path.join(tdir, 'demo-session', 'subagents');
-  fs.rmSync(metaDir, { recursive: true, force: true });
-  fs.mkdirSync(metaDir, { recursive: true });
+  const transcript = TRANSCRIPT;
+  const metaDir = path.join(TDIR, 'demo-session', 'subagents');
   const writeMeta = (a, i) => fs.writeFileSync(path.join(metaDir, `agent-${a.agent_id}.meta.json`),
     JSON.stringify({ agentType: a.agent_type, description: a.task, toolUseId: `toolu_swarm_${i}` }));
   for (const [i, a] of agents.entries()) {
@@ -249,6 +273,7 @@ async function swarm(n) {
 
 do {
   console.log(SWARM ? `▶ swarm demo: ${SWARM} subagents` : '▶ demo session');
+  resetTranscripts();
   if (SWARM) await swarm(SWARM); else await session();
   if (LOOP) await sleep(5000);
 } while (LOOP);

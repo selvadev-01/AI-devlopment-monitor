@@ -328,7 +328,9 @@ function renderAgents() {
     const body = document.createElement('div'); body.style.minWidth = '0';
     const row = document.createElement('div'); row.className = 'row';
     const type = document.createElement('span'); type.className = 'type'; type.textContent = a.type;
-    const tools = document.createElement('span'); tools.className = 'tools'; tools.textContent = `${a.tools} tool${a.tools === 1 ? '' : 's'}`;
+    const tools = document.createElement('span'); tools.className = 'tools';
+    const spent = agentUsage.get(a.id);
+    tools.textContent = `${a.tools} tool${a.tools === 1 ? '' : 's'}${spent ? ` · ${fmtUsd(spent.cost)}` : ''}`;
     const task = document.createElement('span'); task.className = 'task'; task.textContent = a.label || '';
     const last = document.createElement('div'); last.className = 'last'; last.textContent = a.last || '';
     if (list.length > 3) { row.append(type, task, tools); body.append(row); }
@@ -573,6 +575,8 @@ async function refreshSessions() {
 async function startReplay(key, frac = 0) {
   if (!key) { await refreshSessions(); key = selectedKey; }
   if (!key) return;
+  clearTimeout(usageTimer);
+  refreshUsage(key);
   let r; let g;
   try {
     r = await (await fetch(`/api/replay?key=${encodeURIComponent(key)}`)).json();
@@ -717,6 +721,7 @@ function onHello(msg) {
   renderModules(); renderChanged(); renderAgents(); renderSummary(msg.summary);
   updateLiveTimeline();
   refreshSessions();
+  refreshUsage();
 }
 
 function onGraph(msg) {
@@ -788,6 +793,49 @@ bellEl.addEventListener('click', async () => {
 });
 fetch('/api/settings').then((r) => r.json()).then((s) => { alertsOn = s.alerts !== false; renderBell(); }).catch(() => renderBell());
 
+// ------------------------------------------------------------------ tokens / cost
+// Read by the server from Claude Code's transcripts; priced at Anthropic API list prices
+// (a Pro/Max subscription does not bill per token, so this is an estimate of the API price).
+const fmtTok = (n) => (n < 1000 ? String(n) : n < 1e6 ? `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}k` : `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`);
+const fmtUsd = (v) => (v < 0.01 ? (v ? '<$0.01' : '$0') : v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
+const agentUsage = new Map(); // subagent id -> { cost, total }
+const costEl = $('cost');
+let usageTimer = null; let usageAt = 0;
+function usageTip(u) {
+  const t = u.total;
+  const lines = [`≈ ${fmtUsd(t.cost)} at API prices · ${fmtTok(t.total)} tokens in ${t.requests} responses`,
+    `output ${fmtTok(t.output)} · cache read ${fmtTok(t.cacheRead)} · cache write ${fmtTok(t.cacheWrite5m + t.cacheWrite1h)} · input ${fmtTok(t.input)}`];
+  for (const [m, v] of Object.entries(u.byModel)) lines.push(`${m}: ${fmtUsd(v.cost)} · ${fmtTok(v.total)}`);
+  if (u.agents.length) lines.push(`subagents: ${fmtUsd(u.agents.reduce((s, a) => s + a.cost, 0))} of it`);
+  if (t.unpriced) lines.push(`${t.unpriced} responses from a model without a known price`);
+  lines.push('Pro/Max plans are not billed per token. Click for the session summary.');
+  return lines.join('\n');
+}
+async function refreshUsage(key = null) {
+  usageAt = Date.now();
+  let r = null;
+  try {
+    const res = await fetch(`/api/usage${key ? `?key=${encodeURIComponent(key)}` : Q}`);
+    if (res.ok) r = await res.json();
+  } catch { /* offline */ }
+  const u = r?.usage;
+  agentUsage.clear();
+  if (!u || !u.total.requests) { costEl.hidden = true; renderAgents(); return; }
+  for (const a of u.agents) agentUsage.set(a.id, a);
+  $('cost-usd').textContent = fmtUsd(u.total.cost);
+  $('cost-tok').textContent = `${fmtTok(u.total.total)} tok`;
+  costEl.title = usageTip(u);
+  costEl.hidden = false;
+  renderAgents();
+}
+/** Live: at most one refresh every 4 s while events arrive, plus one shortly after the last. */
+function scheduleUsage() {
+  clearTimeout(usageTimer);
+  const wait = Math.max(0, 4000 - (Date.now() - usageAt));
+  usageTimer = setTimeout(() => { if (mode === 'live') refreshUsage(); }, Math.max(wait, 1500));
+}
+costEl.addEventListener('click', () => openSummary(mode === 'replay' ? selectedKey : null));
+
 // ------------------------------------------------------------------ session summary
 // What Claude did in a session (server-computed from the full log): opens by itself when a long
 // turn ends, and from the Summary button for the live session or the one picked for replay.
@@ -830,6 +878,28 @@ async function openSummary(key = null) {
     tile('tool calls', String(s.tools)),
   );
   parts.push(grid);
+  const u = s.usage;
+  if (u?.total.requests) {
+    const tk = el('div', 'sum-grid');
+    const subCost = u.agents.reduce((a, b) => a + b.cost, 0);
+    const hit = u.total.cacheRead / Math.max(1, u.total.total - u.total.output);
+    tk.append(
+      tile('est. API cost', fmtUsd(u.total.cost), 'usd'),
+      tile('tokens', fmtTok(u.total.total)),
+      tile('output', fmtTok(u.total.output)),
+      tile('from cache', `${Math.round(hit * 100)}%`),
+    );
+    const rows = el('ul', 'sum-usage');
+    const row = (name, v, cls = '') => { const li = el('li', cls); li.append(el('span', 'name', name), el('span', 'tok', fmtTok(v.total)), el('b', null, fmtUsd(v.cost))); return li; };
+    for (const [m, v] of Object.entries(u.byModel).sort((a, b) => b[1].cost - a[1].cost)) rows.append(row(m.replace(/^claude-/, ''), v));
+    if (u.agents.length) {
+      rows.append(row('main agent', u.main, 'sep'));
+      for (const a of u.agents.slice(0, 5)) rows.append(row(`${a.type}${a.label ? ` · ${a.label}` : ''}`, a, 'agent'));
+      if (u.agents.length > 5) rows.append(row(`+${u.agents.length - 5} more subagents`, u.agents.slice(5).reduce((x, a) => ({ total: x.total + a.total, cost: x.cost + a.cost }), { total: 0, cost: 0 }), 'agent'));
+    }
+    parts.push(el('h3', null, `Tokens & cost${subCost ? ` · subagents ${Math.round((subCost / Math.max(u.total.cost, 1e-9)) * 100)}%` : ''}`), tk, rows);
+    parts.push(el('p', 'sum-foot', 'Estimated at Anthropic API list prices. Pro/Max plans are not billed per token.'));
+  }
 
   if (s.modules.length) {
     const mods = el('div', 'sum-mods');
@@ -885,6 +955,7 @@ function onEvent(msg) {
   renderSummary(msg.summary);
   updateLiveTimeline();
   if (ev.kind === 'session') refreshSessions();
+  scheduleUsage();
 }
 
 let retry = 500;

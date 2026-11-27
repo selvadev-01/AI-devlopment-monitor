@@ -13,6 +13,7 @@ import { normalizeHook } from './normalize.js';
 import { listSessions, sessionEvents, maxEventId } from './history.js';
 import { decideAlert, notifyOS, readSettings, writeSettings } from './alerts.js';
 import { summarizeSession } from './summary.js';
+import { rememberTranscript, findTranscript, sessionUsage } from './usage.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, '..');
@@ -247,6 +248,7 @@ function ingest(payload) {
 
   const ev = normalizeHook(payload);
   if (!ev) return null;
+  rememberTranscript(ev.session, ev.transcript);
   p.lastActive = Date.now();
 
   const rel = ev.file ? toRel(p.root, ev.file) : null;
@@ -326,6 +328,25 @@ function readBody(req, limit = 2 * 1024 * 1024) {
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
 /** ?project=<dir> picks a project; without it, the followed project. */
+/** A recorded session segment by key, or the project's live one (the latest segment of its current session). */
+function segmentFor(key, p) {
+  const all = listSessions(LOG_FILE);
+  const liveSid = p?.events.at(-1)?.session;
+  const liveKey = liveSid && all.find((s) => s.session === liveSid && (!s.root || keyOf(s.root) === p.key))?.key;
+  const k = key || liveKey;
+  return { seg: k ? sessionEvents(LOG_FILE, k) : null, live: Boolean(k && k === liveKey) };
+}
+
+/** Tokens and estimated cost of a segment, from the Claude Code transcripts (null if none found). */
+function usageOf(seg, live) {
+  try {
+    const sid = seg.session;
+    return sessionUsage(findTranscript(sid), sid, {
+      since: Date.parse(seg.events[0].ts), until: live ? null : Date.parse(seg.events.at(-1).ts),
+    });
+  } catch (e) { log('[monitor] usage:', e.message); return null; }
+}
+
 function pickProject(url) {
   const dir = url.searchParams.get('project');
   return dir ? projectFor(dir, { exact: true }) : projects.get(followKey) || null;
@@ -389,19 +410,16 @@ const handler = async (req, res) => {
       const sessions = p ? all.filter((s) => !s.root || keyOf(s.root) === p.key) : all;
       return json(res, 200, { sessions, live: p?.events.at(-1)?.session || null });
     }
-    if (req.method === 'GET' && url.pathname === '/api/summary') {
+    if (req.method === 'GET' && (url.pathname === '/api/summary' || url.pathname === '/api/usage')) {
       // ?key=<session segment> for a recorded session, else the project's live session
-      let key = url.searchParams.get('key');
       const p = pickProject(url);
-      if (!key) {
-        const live = p?.events.at(-1)?.session;
-        key = listSessions(LOG_FILE).find((s) => s.session === live && (!s.root || !p || keyOf(s.root) === p.key))?.key;
-      }
-      const seg = key && sessionEvents(LOG_FILE, key);
+      const { seg, live } = segmentFor(url.searchParams.get('key'), p);
       if (!seg) return json(res, 404, { ok: false, error: 'no session yet' });
+      const usage = usageOf(seg, live);
+      if (url.pathname === '/api/usage') return json(res, 200, { key: seg.key, live, usage });
       const proj = (seg.root && projectFor(seg.root, { exact: true })) || p;
       const modOf = new Map((proj?.graph?.nodes || []).map((n) => [n.id, n.module]));
-      return json(res, 200, { key: seg.key, root: seg.root, project: seg.root ? path.basename(seg.root) : null, ...summarizeSession(seg.events, (f) => modOf.get(f)) });
+      return json(res, 200, { key: seg.key, root: seg.root, project: seg.root ? path.basename(seg.root) : null, usage, ...summarizeSession(seg.events, (f) => modOf.get(f)) });
     }
     if (req.method === 'GET' && url.pathname === '/api/replay') {
       const seg = sessionEvents(LOG_FILE, url.searchParams.get('key') || '');

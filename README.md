@@ -67,6 +67,12 @@ The monitor tells you when Claude is waiting for you, even when you are in anoth
 
 When a turn that took longer than 30 seconds ends, a card shows what Claude did in the session: duration, prompts, files read / edited / created, lines added and removed, the last test result, subagents, commands, the modules it worked in, and the files that changed most (click to fly there, `open` to open it). The **Summary** button in the top bar shows it any time, for the live session or for the session picked in the replay timeline. The numbers come from the full event log (`GET /api/summary`).
 
+## Tokens and cost
+
+The top bar shows how many tokens the current session has used and what that would cost at Anthropic API list prices, for example `$1.84 · 2.3M tok`. Hover over it to see the split by model and token type (output, cache reads, cache writes, input). Click it to open the session summary, which has a **Tokens & cost** section: one row per model, the main agent, and each subagent with its task. Each running subagent also shows its own cost in the Subagents panel.
+
+Hooks don't carry token counts, so the server reads them from the transcripts Claude Code writes under `~/.claude/projects/` (the session's `.jsonl` file, plus `<session>/subagents/agent-<id>.jsonl` for each subagent). It only reads these files and never changes them. It reads only the new lines on each refresh, and it counts a response written across several lines once. The prices are in [server/usage.js](server/usage.js): input, output, 5-minute and 1-hour cache writes, and cache reads, per model. Fast mode costs twice as much. Responses from models not in the table are counted as tokens but not priced. If you use a Pro or Max plan, you are not billed per token; the figure shows what the same work would cost on the API. `GET /api/usage` (`?key=` for a recorded session) returns the same numbers. The demo writes a made-up transcript to `data/demo-transcripts`, so the view has numbers to show.
+
 ## Claude Code in a terminal (CLI)
 
 The hooks are installed in `~/.claude/settings.json`, so `claude` in any terminal reports to the monitor just like the VS Code extension does. A `SessionStart` hook (`scripts/ensure-server.js`, async, never blocks Claude) starts the monitor in the background when it is not running, so there is no `npm start` to remember. VS Code and the terminal share one monitor on port 7777.
@@ -168,6 +174,7 @@ Test output is parsed for Jest, Vitest, pytest, Mocha and similar runners (for e
 - [server/index.js](server/index.js): HTTP + WebSocket server, event store, file watcher
 - [server/scanner.js](server/scanner.js): file graph and import resolution (JS/TS, Python, CSS)
 - [server/normalize.js](server/normalize.js): turns raw hook payloads into visual events
+- [server/usage.js](server/usage.js): token counts and estimated cost from Claude Code transcripts
 - [web/engine.js](web/engine.js): renderer, bloom, camera follow, callouts, theme switching
 - [web/themes/neural.js](web/themes/neural.js), [web/themes/galaxy.js](web/themes/galaxy.js): the two themes
 - [web/app.js](web/app.js): panels, activity feed, WebSocket client

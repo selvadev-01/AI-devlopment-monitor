@@ -148,7 +148,7 @@ li:hover > .open-btn, li.sel > .open-btn, .open-btn:focus-visible { opacity: 1; 
 .agents li:not(.empty):hover { background: #121722; }
 .agents .dot { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--c); }
 .agents .row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.agents .type { font: 600 12px var(--mono); color: var(--c); }
+.agents .type { font: 600 12px var(--mono); color: var(--c); white-space: nowrap; flex-shrink: 0; }
 .agents .tools { font: 11px var(--mono); color: var(--faint); margin-left: auto; white-space: nowrap; }
 .agents .task, .agents .last { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agents .task { color: var(--text); }
@@ -277,6 +277,11 @@ li:hover > .open-btn, li.sel > .open-btn, .open-btn:focus-visible { opacity: 1; 
 /* ---------------------------------------------------------------- session summary */
 .top-btn { height: 32px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line-strong); background: none; color: var(--text); font: 500 12px var(--sans); cursor: pointer; }
 .top-btn:hover { background: #121722; }
+.cost { height: 32px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line-strong); background: none; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.cost[hidden] { display: none; }
+.cost:hover { background: #121722; }
+.cost b { font: 600 13px var(--mono); color: #e8c46a; }
+.cost span { font: 11px var(--mono); color: var(--faint); }
 .summary { position: absolute; z-index: 5; right: 14px; bottom: 44px; width: min(380px, calc(100% - 28px)); max-height: calc(100% - 70px); overflow-y: auto;
   background: rgba(8, 11, 16, .96); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 12px 32px rgba(0, 0, 0, .55); padding: 14px 16px 12px; }
 .summary header { display: flex; align-items: flex-start; gap: 10px; }
@@ -301,5 +306,13 @@ li:hover > .open-btn, li.sel > .open-btn, .open-btn:focus-visible { opacity: 1; 
 .sum-files .tag.new { color: var(--create); } .sum-files .tag.read { color: var(--read); }
 .sum-files .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .sum-files .reads { font-size: 11px; color: var(--faint); }
+.sum-tile.usd { --c: #e8c46a; }
+.sum-usage { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.sum-usage li { display: flex; gap: 10px; align-items: baseline; font: 12px var(--mono); padding: 2px 0; }
+.sum-usage li.sep { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
+.sum-usage li.agent .name { color: var(--agent); }
+.sum-usage .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.sum-usage .tok { color: var(--faint); }
+.sum-usage b { font-weight: 600; color: var(--text); min-width: 56px; text-align: right; }
 .sum-foot { margin: 12px 0 0; font: 11px var(--mono); color: var(--faint); }
 .sum-empty { font: 12px var(--sans); color: var(--muted); }
