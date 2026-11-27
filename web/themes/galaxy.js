@@ -1,7 +1,7 @@
 // Galaxy theme: modules are star systems, files are planets, Claude is a ship.
 import * as THREE from 'three';
 import {
-  Animator, KIND_COLORS, AGENT_COLORS, ease, glowSprite, ringTexture, loadTex, skySphere, dotTexture, nebulaTexture, starfield, makeLabel, hash, rng, disposeTree, declutterLabels,
+  Animator, KIND_COLORS, AGENT_COLORS, ease, glowSprite, ringTexture, loadTex, dustTexture, skySphere, dotTexture, nebulaTexture, starfield, makeLabel, hash, rng, disposeTree, declutterLabels,
 } from '../fx.js';
 import { ScoutManager } from '../scouts.js';
 import { displayName } from '../model.js';
@@ -219,12 +219,25 @@ export class GalaxyTheme {
   buildCore() {
     const R = this.galaxyR * 1.12;
     const mat = new THREE.ShaderMaterial({
-      uniforms: { uMap: { value: loadTex('galaxy_disc') }, uBright: { value: 0.5 } },
+      uniforms: {
+        uMap: { value: loadTex('galaxy_disc') }, uDust: { value: dustTexture() }, uBright: { value: 0.5 },
+        uRep: { value: (2 * R) / 70 }, // one dust tile per ~70 world units
+      },
       vertexShader: /* glsl */`varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: /* glsl */`
-        uniform sampler2D uMap; uniform float uBright; varying vec2 vUv;
+        uniform sampler2D uMap; uniform sampler2D uDust; uniform float uBright; uniform float uRep; varying vec2 vUv;
         void main() {
-          vec3 c = texture2D(uMap, vUv).rgb;
+          // a light blur of the 1024px photo hides its JPEG blocks up close
+          vec2 px = vec2(0.75 / 1024.0);
+          vec3 c = (texture2D(uMap, vUv).rgb * 2.0 + texture2D(uMap, vUv + px).rgb + texture2D(uMap, vUv - px).rgb
+                  + texture2D(uMap, vUv + vec2(px.x, -px.y)).rgb + texture2D(uMap, vUv + vec2(-px.x, px.y)).rgb) / 6.0;
+          // close up, tiling dust adds the structure the photo lacks; far away mipmaps flatten it to ~1
+          vec2 d = vUv * uRep;
+          float n = texture2D(uDust, d).r * 0.6 + texture2D(uDust, d * 3.7 + 0.31).g * 0.4;
+          float lum = max(max(c.r, c.g), c.b);
+          c *= mix(1.0, n * 2.0, 0.7);
+          float speck = texture2D(uDust, d * 1.9 + 0.57).b;
+          c += vec3(1.0, 0.95, 0.88) * speck * smoothstep(0.03, 0.25, lum) * 0.9;
           float r = length(vUv - 0.5) * 2.0;
           float fade = 1.0 - smoothstep(0.72, 0.98, r);   // soft round edge, hides the square corners
           c *= uBright * fade;

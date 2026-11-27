@@ -46,6 +46,7 @@ export class NeuralTheme {
     this.root.add(this.stars);
     this.dust = this.makeDust(700, this.radius * 1.5);
     this.root.add(this.dust);
+    this.root.add(this.makeBokeh(model, 46));
 
     this.nodeGroup = new THREE.Group();
     this.root.add(this.nodeGroup);
@@ -64,6 +65,23 @@ export class NeuralTheme {
       lift: 3.2,
     });
     this.scouts.sync(model);
+  }
+
+  /** Out-of-focus cells far behind the network, in the module colours: depth like a microscope shot. */
+  makeBokeh(model, count) {
+    const g = new THREE.Group();
+    const colors = [...model.modules.values()].map((m) => m.color).filter(Boolean);
+    if (!colors.length) colors.push('#3fd4ff');
+    const r = rng(0.42);
+    for (let i = 0; i < count; i++) {
+      const dir = new THREE.Vector3(r() - 0.5, (r() - 0.5) * 0.7, r() - 0.5).normalize();
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTexture(), color: C(colors[i % colors.length]), transparent: true, opacity: 0.025 + r() * 0.045, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      s.scale.setScalar(this.radius * (0.05 + r() * 0.13));
+      s.position.copy(dir.multiplyScalar(this.radius * (1.8 + r() * 1.6)));
+      s.raycast = () => {};
+      g.add(s);
+    }
+    return g;
   }
 
   makeDust(count, radius) {
@@ -146,20 +164,30 @@ export class NeuralTheme {
   }
 
   buildDendrites() {
-    if (this.dendrites) { this.dendrites.removeFromParent(); this.dendrites.geometry.dispose(); this.dendrites.material.dispose(); }
+    for (const o of [this.dendrites, this.tips]) if (o) { o.removeFromParent(); o.geometry.dispose(); o.material.dispose(); }
     const pos = []; const col = [];
+    const tipPos = []; const tipCol = []; const tipSize = [];
+    const rand3 = (r, s) => new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(s);
     for (const rec of this.records.values()) {
       const r = rng(hash(rec.id) + 0.01);
       const count = 4 + Math.floor(r() * 4);
+      const c = rec.base.clone().multiplyScalar(this.model.large ? 0.22 : 0.45);
+      const seg = (a, b, fa, fb) => { pos.push(a.x, a.y, a.z, b.x, b.y, b.z); col.push(c.r * fa, c.g * fa, c.b * fa, c.r * fb, c.g * fb, c.b * fb); };
+      // a bulb at each dendrite end, like the synaptic boutons in the concept art
+      const tip = (p, s) => { tipPos.push(p.x, p.y, p.z); tipCol.push(rec.base.r, rec.base.g, rec.base.b); tipSize.push(s); };
       for (let i = 0; i < count; i++) {
         const dir = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize();
         const len = rec.size * (1.6 + r() * 2.2);
         const p0 = rec.group.position.clone().addScaledVector(dir, rec.size * 0.8);
         const p1 = rec.group.position.clone().addScaledVector(dir, len);
-        const p2 = p1.clone().add(new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(len * 0.5));
-        pos.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-        const c = rec.base.clone().multiplyScalar(this.model.large ? 0.22 : 0.45);
-        for (let k = 0; k < 4; k++) { const f = k < 2 ? 1 : 0.45; col.push(c.r * f, c.g * f, c.b * f); }
+        const p2 = p1.clone().add(rand3(r, len * 0.5));
+        seg(p0, p1, 1, 0.8); seg(p1, p2, 0.8, 0.45);
+        tip(p2, rec.size * 0.42);
+        if (r() < 0.6) { // a side branch from the fork
+          const p3 = p1.clone().addScaledVector(dir, len * 0.35).add(rand3(r, len * 0.55));
+          seg(p1, p3, 0.8, 0.4);
+          tip(p3, rec.size * 0.32);
+        }
       }
     }
     const g = new THREE.BufferGeometry();
@@ -167,6 +195,31 @@ export class NeuralTheme {
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     this.dendrites = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
     this.root.add(this.dendrites);
+
+    const tg = new THREE.BufferGeometry();
+    tg.setAttribute('position', new THREE.Float32BufferAttribute(tipPos, 3));
+    tg.setAttribute('color', new THREE.Float32BufferAttribute(tipCol, 3));
+    tg.setAttribute('size', new THREE.Float32BufferAttribute(tipSize, 1));
+    this.tips = new THREE.Points(tg, new THREE.ShaderMaterial({
+      uniforms: { uMap: { value: dotTexture() }, uScale: { value: 1 }, uAlpha: { value: this.model.large ? 0.35 : 0.75 } },
+      vertexShader: /* glsl */`
+        attribute float size; attribute vec3 color; uniform float uScale; varying vec3 vC;
+        void main() {
+          vC = color;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(size * uScale / -mv.z, 1.0, 64.0); // world-sized bulbs
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: /* glsl */`
+        uniform sampler2D uMap; uniform float uAlpha; varying vec3 vC;
+        void main() {
+          float a = texture2D(uMap, gl_PointCoord).a;
+          float core = smoothstep(0.55, 1.0, a);
+          gl_FragColor = vec4(mix(vC, vec3(1.0), core * 0.35) * a * uAlpha, 1.0);
+        }`,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    this.root.add(this.tips);
   }
 
   buildLabels() {
@@ -477,6 +530,10 @@ export class NeuralTheme {
 
     if ((this.labelTick = (this.labelTick || 0) + dt) > 0.25) { this.labelTick = 0; this.updateLabels(); }
     this.sky.position.copy(this.engine.camera.position);
+    if (this.tips) { // pixels per world unit at distance 1, so bulbs keep their world size
+      const h = this.engine.renderer.getDrawingBufferSize(this.tmpV2 ||= new THREE.Vector2()).y;
+      this.tips.material.uniforms.uScale.value = (h * this.engine.camera.projectionMatrix.elements[5]) / 2;
+    }
     this.dust.rotation.y += dt * 0.01;
     this.stars.rotation.y += dt * 0.002;
   }
@@ -491,9 +548,10 @@ export class NeuralTheme {
 
 // --------------------------------------------------------------------- helpers
 const SOMA_VERT = /* glsl */`
-  varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+  varying vec3 vN; varying vec3 vW; varying vec2 vUv; varying vec3 vP;
   void main() {
     vUv = uv;
+    vP = position; // unit sphere: object position = direction, seamless for the 3D cell pattern
     vec4 w = modelMatrix * vec4(position, 1.0);
     vW = w.xyz;
     vN = normalize(mat3(modelMatrix) * normal);
@@ -501,14 +559,39 @@ const SOMA_VERT = /* glsl */`
   }`;
 
 // Electron-microscopy membrane texture on the cell body, with a bright translucent rim.
+// Plus a glowing web of cell walls (3D Voronoi edges) and a bright nucleus seen through the middle.
 const SOMA_FRAG = /* glsl */`
   uniform vec3 uColor; uniform sampler2D uMap;
-  varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+  varying vec3 vN; varying vec3 vW; varying vec2 vUv; varying vec3 vP;
+  vec3 h3(vec3 p) {
+    p = vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6)));
+    return fract(sin(p) * 43758.5453);
+  }
+  // distance to the nearest cell wall (F2 - F1 of a 3D Voronoi)
+  float walls(vec3 p) {
+    vec3 i = floor(p); vec3 f = fract(p);
+    float d1 = 8.0; float d2 = 8.0;
+    for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
+      vec3 g = vec3(float(x), float(y), float(z));
+      vec3 o = g + h3(i + g) * 0.85 - f;
+      float d = dot(o, o);
+      if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+    }
+    return sqrt(d2) - sqrt(d1);
+  }
   void main() {
     float m = pow(texture2D(uMap, vUv * vec2(2.0, 1.0)).r, 1.6);
     vec3 V = normalize(cameraPosition - vW);
-    float f = 1.0 - max(dot(normalize(vN), V), 0.0);
-    vec3 c = uColor * (0.1 + m * 0.75) + uColor * pow(f, 2.4) * 1.1;
+    float facing = max(dot(normalize(vN), V), 0.0);
+    float f = 1.0 - facing;
+    vec3 p = normalize(vP) * 3.2;
+    float web = 1.0 - smoothstep(0.02, 0.16, walls(p));          // big cells
+    float fine = 1.0 - smoothstep(0.02, 0.12, walls(p * 2.3 + 7.1)); // small cells inside them
+    float nucleus = pow(facing, 7.0);
+    vec3 c = uColor * (0.05 + m * 0.3);
+    c += uColor * (web * 0.42 + fine * 0.14) * (0.3 + 0.7 * facing);
+    c += mix(uColor, vec3(1.0), 0.4) * nucleus * 0.4;
+    c += uColor * pow(f, 2.4) * 1.0;
     gl_FragColor = vec4(c, 1.0);
   }`;
 

@@ -64,6 +64,61 @@ export const ringTexture = () => canvasTexture('ring', 256, (g, s) => {
   g.fillStyle = r; g.fillRect(0, 0, s, s);
 });
 
+/**
+ * Tiling detail for big textured surfaces seen up close (the galaxy disc): R and G are two
+ * seamless fractal noises with mean ~0.5, B is sparse star specks. Mipmaps average it to a flat
+ * grey far away, so it only adds structure where the base texture runs out of pixels.
+ */
+export function dustTexture() {
+  const key = 'dust';
+  if (texCache.has(key)) return texCache.get(key);
+  const S = 512;
+  const noise = (seed) => {
+    const out = new Float32Array(S * S);
+    let amp = 0.5; let total = 0;
+    for (const cells of [4, 8, 16, 32, 64]) {
+      const r = rng(seed + cells * 0.013);
+      const grid = Float32Array.from({ length: cells * cells }, r);
+      const at = (x, y) => grid[(y % cells) * cells + (x % cells)];
+      const step = S / cells;
+      for (let y = 0; y < S; y++) {
+        const gy = y / step; const y0 = Math.floor(gy); const fy = gy - y0; const sy = fy * fy * (3 - 2 * fy);
+        for (let x = 0; x < S; x++) {
+          const gx = x / step; const x0 = Math.floor(gx); const fx = gx - x0; const sx = fx * fx * (3 - 2 * fx);
+          const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx;
+          const bot = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
+          out[y * S + x] += (top + (bot - top) * sy) * amp;
+        }
+      }
+      total += amp; amp *= 0.55;
+    }
+    for (let i = 0; i < out.length; i++) out[i] /= total;
+    return out;
+  };
+  const a = noise(0.21); const b = noise(0.67);
+  const specks = new Float32Array(S * S);
+  const r = rng(0.93);
+  const put = (x, y, v) => { const i = ((y + S) % S) * S + ((x + S) % S); specks[i] = Math.max(specks[i], v); };
+  for (let i = 0; i < 2600; i++) {
+    const x = Math.floor(r() * S); const y = Math.floor(r() * S); const v = 0.35 + r() * 0.65;
+    put(x, y, v);
+    if (v > 0.8) { put(x + 1, y, v * 0.35); put(x - 1, y, v * 0.35); put(x, y + 1, v * 0.35); put(x, y - 1, v * 0.35); }
+  }
+  const img = new ImageData(S, S);
+  // stretch the noise contrast around 0.5 so the detail is visible, then clamp
+  const k = (v) => Math.max(0, Math.min(255, Math.round((0.5 + (v - 0.5) * 2.2) * 255)));
+  for (let i = 0; i < S * S; i++) img.data.set([k(a[i]), k(b[i]), Math.round(specks[i] * 255), 255], i * 4);
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  c.getContext('2d').putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.NoColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  texCache.set(key, t);
+  return t;
+}
+
 export const nebulaTexture = (seed = 1) => canvasTexture('nebula' + seed, 256, (g, s) => {
   const rand = rng(seed * 0.37 + 0.11);
   for (let i = 0; i < 26; i++) {
