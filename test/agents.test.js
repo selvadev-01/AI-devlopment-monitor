@@ -64,3 +64,14 @@ test('/api/health identifies the monitor', async () => {
   assert.equal(h.port, PORT);
   assert.equal(h.standalone, false); // started from code, like inside VS Code
 });
+
+test('/api/doctor reports the hooks that arrived and how each subagent was bound', async () => {
+  const { version, sessions } = await (await fetch(`http://127.0.0.1:${PORT}/api/doctor`)).json();
+  assert.ok(version);
+  const s = sessions.find((x) => x.session === 'sess');
+  assert.ok(s.hooks.PreToolUse > 0 && s.hooks.SessionStart === 1);
+  assert.deepEqual(s.launches, { withId: 5, withoutId: 0 });
+  assert.deepEqual(s.agents, { exact: 4, guessed: 0, corrected: 1 });
+  assert.equal(s.transcript, transcript);
+  assert.equal(s.transcriptExists, false);
+});

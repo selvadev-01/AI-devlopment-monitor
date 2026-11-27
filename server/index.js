@@ -13,7 +13,7 @@ import { normalizeHook } from './normalize.js';
 import { listSessions, sessionEvents, maxEventId } from './history.js';
 import { decideAlert, notifyOS, readSettings, writeSettings } from './alerts.js';
 import { summarizeSession } from './summary.js';
-import { rememberTranscript, findTranscript, sessionUsage } from './usage.js';
+import { rememberTranscript, findTranscript, sessionUsage, readTranscript } from './usage.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, '..');
@@ -29,6 +29,21 @@ const alertState = new Map(); // session id -> { turnStart, lastAlertAt, alerted
 let standalone = false; // true when run as its own process (npm start / adm), false inside VS Code
 let listenPort = null;
 const startedAt = Date.now();
+const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version; } catch { return null; } })();
+
+// What arrived from Claude Code, per session, for `adm doctor`: which hooks fire, whether payloads
+// carry the fields the monitor relies on, and how subagents were matched to their launches.
+const diag = new Map(); // session id -> report
+function diagFor(sid) {
+  let d = diag.get(sid);
+  if (!d) {
+    d = { session: sid, root: null, firstAt: null, lastAt: null, hooks: {}, notificationTypes: {}, transcript: null,
+      launches: { withId: 0, withoutId: 0 }, binding: new Map() }; // binding: subagent id -> 'exact' | 'guessed' | 'corrected'
+    diag.set(sid, d);
+    if (diag.size > 50) diag.delete(diag.keys().next().value);
+  }
+  return d;
+}
 const log = (...a) => { if (!quiet) console.log(...a); };
 
 const keyOf = (root) => {
@@ -130,6 +145,7 @@ class Project {
   trackAgent(event, ev) {
     if (event.kind === 'agent_start') {
       const pend = { startId: event.id, type: ev.launchType, label: ev.detail, color: this.freeAgentColor(), toolUseId: ev.toolUseId };
+      diagFor(ev.session).launches[ev.toolUseId ? 'withId' : 'withoutId']++;
       this.pendingAgents.push(pend);
       this.launches.set(ev.toolUseId || `start:${event.id}`, pend);
       if (this.launches.size > 200) this.launches.delete(this.launches.keys().next().value);
@@ -147,18 +163,20 @@ class Project {
       a = {
         id: ev.agent, type: ev.agentType || pend?.type || 'agent', label: pend?.label || ev.agentType || 'Subagent',
         color: pend ? pend.color : this.freeAgentColor(), startId: pend?.startId ?? null, tools: 0,
-        launch: pend, guessed: !exact, tries: 0,
+        launch: pend, guessed: !exact, tries: 0, session: ev.session,
       };
       this.agents.set(a.id, a);
+      diagFor(ev.session).binding.set(a.id, exact ? 'exact' : 'guessed');
       event.agentStartId = a.startId;
     } else if (a.guessed && a.tries++ < 20) {
       // The meta file may appear a moment after the first tool call: correct a guessed label.
       const right = this.launchFor(this.agentMeta(ev));
       if (right) {
         a.guessed = false;
+        diagFor(a.session).binding.set(a.id, 'corrected');
         if (right !== a.launch) {
           const other = [...this.agents.values()].find((b) => b !== a && b.launch === right);
-          if (other) { other.launch = a.launch; other.label = a.launch?.label || other.type; other.guessed = true; }
+          if (other) { other.launch = a.launch; other.label = a.launch?.label || other.type; other.guessed = true; diagFor(other.session).binding.set(other.id, 'guessed'); }
           else this.pendingAgents = this.pendingAgents.filter((x) => x !== right).concat(a.launch ? [a.launch] : []);
           a.launch = right; a.label = right.label;
         }
@@ -249,6 +267,12 @@ function ingest(payload) {
   const ev = normalizeHook(payload);
   if (!ev) return null;
   rememberTranscript(ev.session, ev.transcript);
+  const d = diagFor(ev.session);
+  const hookName = payload.hook_event_name || 'unknown';
+  d.hooks[hookName] = (d.hooks[hookName] || 0) + 1;
+  if (payload.notification_type) d.notificationTypes[payload.notification_type] = (d.notificationTypes[payload.notification_type] || 0) + 1;
+  if (ev.transcript && !ev.agent) d.transcript = ev.transcript;
+  d.root = p.root; d.firstAt ??= new Date().toISOString(); d.lastAt = new Date().toISOString();
   p.lastActive = Date.now();
 
   const rel = ev.file ? toRel(p.root, ev.file) : null;
@@ -383,10 +407,28 @@ const handler = async (req, res) => {
       for (const c of wss?.clients || []) c.send(JSON.stringify({ type: 'alert', event: test }));
       return json(res, 200, { ok: true });
     }
+    if (req.method === 'GET' && url.pathname === '/api/doctor') {
+      // the latest sessions this server has seen (since it started), newest first
+      const list = [...diag.values()].sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, 5);
+      const all = listSessions(LOG_FILE);
+      const sessions = list.map((d) => {
+        const transcript = d.transcript || findTranscript(d.session);
+        const seg = all.find((x) => x.session === d.session);
+        const usage = seg ? usageOf(sessionEvents(LOG_FILE, seg.key), true) : null;
+        const transcriptExists = Boolean(transcript && fs.existsSync(transcript));
+        const agents = { exact: 0, guessed: 0, corrected: 0 };
+        for (const v of d.binding.values()) agents[v]++;
+        const { binding, ...rest } = d;
+        return { ...rest, agents, demo: d.session === 'demo-session', transcript, transcriptExists, transcriptResponses: transcriptExists ? readTranscript(transcript).length : 0,
+          usage: usage && { requests: usage.total.requests, tokens: usage.total.total, cost: usage.total.cost, unpriced: usage.total.unpriced } };
+      });
+      let logBytes = 0; try { logBytes = fs.statSync(LOG_FILE).size; } catch { /* none yet */ }
+      return json(res, 200, { version: VERSION, node: process.version, dataDir: DATA_DIR, logFile: LOG_FILE, logBytes, settings: readSettings(DATA_DIR), sessions });
+    }
     if (req.method === 'GET' && url.pathname === '/api/health') {
       // lets `adm` and the auto-start hook tell this monitor apart from another program on the port
       return json(res, 200, {
-        app: 'ai-dev-monitor', pid: process.pid, port: listenPort, standalone,
+        app: 'ai-dev-monitor', version: VERSION, pid: process.pid, port: listenPort, standalone,
         uptime: Math.round((Date.now() - startedAt) / 1000), follow: projects.get(followKey)?.root || null,
       });
     }

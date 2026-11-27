@@ -6,6 +6,7 @@
 //   adm stop         stop a monitor started by adm / npm start (not the one inside VS Code)
 //   adm status       show whether it runs, where, and which projects it has seen
 //   adm alerts [on|off|test]  desktop notification + sound when Claude needs you
+//   adm doctor [--toast]      check hooks, monitor, the latest session, tokens, subagents, alerts
 // MONITOR_PORT picks another port (default 7777).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,8 +78,48 @@ switch (cmd) {
     }
     break;
   }
+  case 'doctor': {
+    const d = await import('../scripts/doctor.js');
+    const repoVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    const h = await health();
+    let info = null;
+    if (h) { try { const r = await fetch(`http://127.0.0.1:${PORT}/api/doctor`); if (r.ok) info = await r.json(); } catch { /* older server */ } }
+    const all = [];
+    const section = (title, findings) => { all.push(...findings); if (findings.length) console.log(`\n${title}\n${d.format(findings)}`); };
+    const major = Number(process.versions.node.split('.')[0]);
+    console.log(`AI Dev Monitor doctor (version ${repoVersion}, port ${PORT}, Node ${process.versions.node})`);
+    if (major < 18) section('Node', [{ level: 'fail', text: `Node ${process.versions.node} is too old`, hint: 'Install Node 18 or newer' }]);
+    section('Claude Code hooks', d.checkHooks(d.settingsFiles(process.cwd()), PORT));
+    let taken = false; let oldMonitor = false;
+    if (!h && (taken = await portTaken())) {
+      // a monitor from before /api/health still answers /api/state with its summary
+      try { oldMonitor = Boolean((await (await fetch(`http://127.0.0.1:${PORT}/api/state`, { signal: AbortSignal.timeout(1500) })).json())?.summary); } catch { /* not ours */ }
+    }
+    section('Monitor', d.checkServer(h, repoVersion, PORT, { taken, oldMonitor }));
+    if (info) {
+      const real = info.sessions.filter((s) => !s.demo);
+      if (!real.length) {
+        section('Latest Claude Code session', [{ level: 'warn',
+          text: info.sessions.length ? 'Only the demo has sent events since the monitor started' : 'No Claude Code session has sent events since the monitor started',
+          hint: 'Start Claude Code (or send a prompt in an open session), ask it to read a file, then run adm doctor again' }]);
+      } else {
+        section('Latest Claude Code session', d.checkSession(real[0]));
+        if (real.length > 1) console.log(`    (${real.length - 1} more session${real.length > 2 ? 's' : ''} seen; this is the most recent)`);
+      }
+      section('Alerts', d.checkAlerts(info.settings));
+      if (arg === '--toast') {
+        await fetch(`http://127.0.0.1:${PORT}/api/alert-test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        console.log('    Sent a test notification: you should see a desktop notification now.');
+      }
+    }
+    const fails = all.filter((x) => x.level === 'fail').length; const warns = all.filter((x) => x.level === 'warn').length;
+    console.log(`\n${fails ? `${fails} problem${fails > 1 ? 's' : ''} to fix` : 'No problems'}${warns ? `, ${warns} warning${warns > 1 ? 's' : ''}` : ''}.${fails || warns ? '' : ' Everything from Claude Code to the monitor works.'}`);
+    if (arg !== '--toast') console.log('Run adm doctor --toast to also send a test desktop notification.');
+    process.exitCode = fails ? 1 : 0;
+    break;
+  }
   case 'help': case '--help': case '-h':
-    console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 9).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 10).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     break;
   default:
     console.error(`Unknown command "${cmd}". Run: adm help`);

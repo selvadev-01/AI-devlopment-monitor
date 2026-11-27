@@ -85,7 +85,17 @@ adm open [dir]   # open it for another folder (one browser tab per project)
 adm start        # start it in the background, no browser
 adm status       # running? where? which projects has it seen?
 adm stop         # stop a monitor started from the terminal (the VS Code one stops with VS Code)
+adm doctor       # check everything from Claude Code to the monitor; --toast also sends a test notification
 ```
+
+`adm doctor` checks each step that has to work for the monitor to show a session. For each problem it finds, it prints the fix:
+
+- **Hooks:** they are in a Claude Code settings file, cover all 7 events and send to the right port. It also warns when they are installed twice, because then every event arrives twice, and when the auto-start script path no longer exists.
+- **Monitor:** it runs, its version matches this checkout, and it is not an old monitor still running inside VS Code.
+- **Latest real session:** which hooks actually arrived and whether the transcript can be read for tokens. It also checks whether each subagent was matched to its launch exactly, through `tool_use_id` and the `agent-<id>.meta.json` file, or only by guess.
+- **Alerts:** they are on, and the system tool that shows desktop notifications is there.
+
+The command exits with code 1 when something is broken. The monitor's own view of what arrived is at `GET /api/doctor`.
 
 The background monitor logs to `data/server.log`. Install the hooks without the auto-start with `node scripts/install-hooks.js --no-autostart`.
 
