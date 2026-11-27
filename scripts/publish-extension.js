@@ -20,6 +20,15 @@ if (!VSCE_PAT && !OVSX_PAT) {
 
 // tokens go through the environment, never on the command line (they would show in process lists and logs)
 const run = (cmd, env) => { console.log(`> ${cmd}`); execSync(cmd, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...env } }); };
-if (VSCE_PAT) run(`npx --yes @vscode/vsce@3.2.1 publish --packagePath "${vsix}"`, { VSCE_PAT });
-if (OVSX_PAT) run(`npx --yes ovsx@0.10.1 publish "${vsix}"`, { OVSX_PAT });
+const failed = [];
+// --skip-duplicate: a version already in the store (e.g. uploaded by hand) is not an error
+if (VSCE_PAT) {
+  try { run(`npx --yes @vscode/vsce@3.2.1 publish --packagePath "${vsix}" --skip-duplicate`, { VSCE_PAT }); } catch { failed.push('VS Code Marketplace'); }
+}
+if (OVSX_PAT) {
+  // the namespace must exist before the first publish; creating it again just fails, which is fine
+  try { run(`npx --yes ovsx@0.10.1 create-namespace ${publisher}`, { OVSX_PAT }); } catch { console.log(`(namespace ${publisher} already exists)`); }
+  try { run(`npx --yes ovsx@0.10.1 publish "${vsix}" --skip-duplicate`, { OVSX_PAT }); } catch { failed.push('Open VSX'); }
+}
+if (failed.length) { console.error(`\nPublishing failed for: ${failed.join(', ')}`); process.exit(1); }
 console.log(`\nPublished ${publisher}.${name} ${version}.`);
